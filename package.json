@@ -1,0 +1,37 @@
+{
+  "name": "tlozla-beach-watchface",
+  "author": "MakeAwesomeHappen",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "tlozla-beach-watchface",
+    "uuid": "e75f343a-cc8b-4ef7-9c6e-642b36fb7155",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint"
+    ],
+    "watchapp": {
+      "watchface": true
+    },
+    "messageKeys": [
+      "dummy"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "raw",
+          "name": "BEACH_PBLV",
+          "file": "beach.pblv"
+        }
+      ]
+    }
+  }
+}
