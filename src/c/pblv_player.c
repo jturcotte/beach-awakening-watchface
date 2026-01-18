@@ -162,8 +162,12 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
   if(!player || player->frames_offset == 0 || player->n_frames == 0) {
     return false;
   }
+
+  // Loop frames forever. This intentionally does NOT re-apply the keyframe;
+  // well-formed PBLV files can make the frame stream cyclic.
   if(player->frame_index >= player->n_frames) {
-    return false;
+    player->frame_index = 0;
+    player->frame_offset = player->frames_offset;
   }
 
   uint8_t hdr[8];
