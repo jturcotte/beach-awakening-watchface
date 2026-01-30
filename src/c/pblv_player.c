@@ -289,12 +289,13 @@ void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
   const uint16_t map_w = (player->map_w <= 20) ? player->map_w : 20;
   const uint16_t map_h = (player->map_h <= 18) ? player->map_h : 18;
 
-  const uint16_t out_tiles_w = (uint16_t)(((uint16_t)size.w + (PBLV_TILE_PX - 1u)) / PBLV_TILE_PX);
-  const uint16_t out_tiles_h = (uint16_t)(((uint16_t)size.h + (PBLV_TILE_PX - 1u)) / PBLV_TILE_PX);
-  const uint16_t draw_tiles_w = (out_tiles_w < map_w) ? out_tiles_w : map_w;
-  const uint16_t draw_tiles_h = (out_tiles_h < map_h) ? out_tiles_h : map_h;
+  const uint16_t draw_tiles_w = map_w;
+  const uint16_t draw_tiles_h = map_h;
 
   graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+
+  const int16_t offset_x = -60;
+  const int16_t offset_y = -48;
 
   uint8_t last_pal = 0xFF;
   GColor palette[4];
@@ -321,8 +322,8 @@ void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
 
       gbitmap_set_data(player->scratch_tile, (uint8_t *)tile, GBitmapFormat2BitPalette, 4, false);
 
-      const int16_t x = (int16_t)(bounds.origin.x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
-      const int16_t y = (int16_t)(bounds.origin.y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
+      const int16_t x = (int16_t)(bounds.origin.x + offset_x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
+      const int16_t y = (int16_t)(bounds.origin.y + offset_y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
       graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
     }
   }
