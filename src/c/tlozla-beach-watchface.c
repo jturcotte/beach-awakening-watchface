@@ -26,11 +26,8 @@ static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
     return;
   }
 
-  const GRect bounds = layer_get_bounds(layer);
   const GRect fb_bounds = gbitmap_get_bounds(s_framebuffer);
-  const int16_t x = (int16_t)((bounds.size.w - fb_bounds.size.w) / 2);
-  const int16_t y = (int16_t)((bounds.size.h - fb_bounds.size.h) / 2);
-  graphics_draw_bitmap_in_rect(ctx, s_framebuffer, GRect(x, y, fb_bounds.size.w, fb_bounds.size.h));
+  graphics_draw_bitmap_in_rect(ctx, s_framebuffer, GRect(0, 0, fb_bounds.size.w, fb_bounds.size.h));
 }
 
 static void prv_timer_cb(void *context) {
@@ -71,9 +68,9 @@ static void prv_window_load(Window *window) {
   layer_add_child(window_layer, s_canvas_layer);
 
 #if PBL_COLOR
-  s_framebuffer = gbitmap_create_blank(GSize(160, 144), GBitmapFormat8Bit);
+  s_framebuffer = gbitmap_create_blank(bounds.size, GBitmapFormat8Bit);
 #else
-  s_framebuffer = gbitmap_create_blank(GSize(160, 144), GBitmapFormat1Bit);
+  s_framebuffer = gbitmap_create_blank(bounds.size, GBitmapFormat1Bit);
 #endif
 
   const ResHandle res = resource_get_handle(RESOURCE_ID_BEACH_PBLV);

@@ -24,7 +24,7 @@ typedef struct {
 
   // Decoded state
   uint8_t palette_bytes[32];           // 8 palettes x 4 colors (GColor8)
-  uint8_t tiles[2][384][16];           // up to 2 banks, 384 tiles each
+  uint8_t tiles[2][384][64];           // up to 2 banks, 384 tiles each (16x16, 2bpp)
   PblvMapCell map[20 * 18];            // visible map cells
 
   // Playback cursor
@@ -50,8 +50,13 @@ bool pblv_player_load_next_header(PblvPlayer *player);
 bool pblv_player_apply_pending(PblvPlayer *player);
 
 // Renders the current state into an output bitmap.
-// - On color platforms, provide a GBitmapFormat8Bit bitmap sized 160x144.
-// - On B/W (aplite), provide a GBitmapFormat1Bit bitmap sized 160x144.
+// The renderer draws 16x16 tiles starting from visible-map origin (0,0) and clips to the
+// output bitmap bounds. If the output is smaller than the full 20x18 map (320x288 px), the
+// bottom/right will be clipped.
+//
+// Supported output formats:
+// - On color platforms, use GBitmapFormat8Bit.
+// - On B/W (aplite), use GBitmapFormat1Bit.
 void pblv_player_render(const PblvPlayer *player, GBitmap *out);
 
 static inline uint32_t pblv_player_delta_frames_to_ms(uint16_t delta_frames) {

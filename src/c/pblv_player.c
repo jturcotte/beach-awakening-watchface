@@ -3,6 +3,9 @@
 #define PBLV_MAGIC 0x564c4250u // 'PBLV' little-endian
 #define PBLV_KEYF  0x4659454bu // 'KEYF' little-endian
 
+#define PBLV_TILE_PX 16u
+#define PBLV_TILE_BYTES 64u
+
 static bool prv_res_read(ResHandle res, uint32_t offset, void *out, size_t len) {
   const size_t got = resource_load_byte_range(res, offset, out, len);
   return got == len;
@@ -109,8 +112,8 @@ bool pblv_player_init(PblvPlayer *player, ResHandle res) {
   off += n_palette_bytes;
 
   // Tile table
-  const uint32_t tile_table_bytes = (uint32_t)bank_count * (uint32_t)tile_count * 16u;
-  const uint32_t max_supported = 2u * 384u * 16u;
+  const uint32_t tile_table_bytes = (uint32_t)bank_count * (uint32_t)tile_count * PBLV_TILE_BYTES;
+  const uint32_t max_supported = 2u * 384u * PBLV_TILE_BYTES;
   if(tile_table_bytes > max_supported) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: tile table too large (%lu)", (unsigned long)tile_table_bytes);
     return false;
@@ -118,11 +121,11 @@ bool pblv_player_init(PblvPlayer *player, ResHandle res) {
 
   for(uint16_t bank = 0; bank < bank_count; bank++) {
     for(uint16_t t = 0; t < tile_count && t < 384; t++) {
-      if(!prv_res_read(res, off, player->tiles[bank][t], 16)) {
+      if(!prv_res_read(res, off, player->tiles[bank][t], PBLV_TILE_BYTES)) {
         APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed reading tile bank=%u idx=%u", (unsigned)bank, (unsigned)t);
         return false;
       }
-      off += 16;
+      off += PBLV_TILE_BYTES;
     }
   }
 
@@ -210,7 +213,7 @@ bool pblv_player_apply_pending(PblvPlayer *player) {
 
   // Tile updates
   for(uint16_t i = 0; i < player->pending_n_tile; i++) {
-    uint8_t rec[20];
+    uint8_t rec[4 + PBLV_TILE_BYTES];
     if(!prv_res_read(player->res, off, rec, sizeof(rec))) {
       return false;
     }
@@ -218,9 +221,9 @@ bool pblv_player_apply_pending(PblvPlayer *player) {
     const uint16_t tile_index = (uint16_t)(tile_key & 0x7FFF);
     const uint16_t bank = (uint16_t)((tile_key >> 15) & 1);
     if(bank < 2 && tile_index < 384) {
-      memcpy(player->tiles[bank][tile_index], &rec[4], 16);
+      memcpy(player->tiles[bank][tile_index], &rec[4], PBLV_TILE_BYTES);
     }
-    off += 20;
+    off += (uint32_t)sizeof(rec);
   }
 
   // Map updates
@@ -247,9 +250,10 @@ bool pblv_player_apply_pending(PblvPlayer *player) {
   return true;
 }
 
-static uint8_t prv_tile_px(const uint8_t tile[16], uint8_t x, uint8_t y) {
-  const uint8_t b = tile[y * 2 + (x >= 4 ? 1 : 0)];
-  const uint8_t shift = (uint8_t)(6 - (x % 4) * 2);
+static uint8_t prv_tile_px_16x16(const uint8_t tile[PBLV_TILE_BYTES], uint8_t x, uint8_t y) {
+  // 16 pixels/row -> 4 bytes/row, 4 pixels/byte.
+  const uint8_t b = tile[y * 4 + (x >> 2)];
+  const uint8_t shift = (uint8_t)(6 - (x & 3) * 2);
   return (b >> shift) & 0x03;
 }
 
@@ -269,7 +273,8 @@ void pblv_player_render(const PblvPlayer *player, GBitmap *out) {
   }
 
   const GSize size = gbitmap_get_bounds(out).size;
-  if(size.w != 160 || size.h != 144) {
+
+  if(size.w <= 0 || size.h <= 0) {
     return;
   }
 
@@ -278,9 +283,21 @@ void pblv_player_render(const PblvPlayer *player, GBitmap *out) {
 
   const GBitmapFormat fmt = gbitmap_get_format(out);
 
-  for(uint16_t ty = 0; ty < 18; ty++) {
-    for(uint16_t tx = 0; tx < 20; tx++) {
-      const uint16_t map_index = (uint16_t)(tx + ty * 20);
+  // Clear the whole output buffer so areas outside the map don't keep old pixels.
+  memset(data, 0, (size_t)row_bytes * (size_t)size.h);
+
+  const uint16_t map_w = (player->map_w <= 20) ? player->map_w : 20;
+  const uint16_t map_h = (player->map_h <= 18) ? player->map_h : 18;
+
+  // Render the visible portion of the map from origin (0,0) and clip to the output size.
+  const uint16_t out_tiles_w = (uint16_t)(((uint16_t)size.w + (PBLV_TILE_PX - 1u)) / PBLV_TILE_PX);
+  const uint16_t out_tiles_h = (uint16_t)(((uint16_t)size.h + (PBLV_TILE_PX - 1u)) / PBLV_TILE_PX);
+  const uint16_t draw_tiles_w = (out_tiles_w < map_w) ? out_tiles_w : map_w;
+  const uint16_t draw_tiles_h = (out_tiles_h < map_h) ? out_tiles_h : map_h;
+
+  for(uint16_t ty = 0; ty < draw_tiles_h; ty++) {
+    for(uint16_t tx = 0; tx < draw_tiles_w; tx++) {
+      const uint32_t map_index = (uint32_t)tx + (uint32_t)ty * 20u;
       const uint16_t tile_key = player->map[map_index].tile_key;
       const uint16_t tile_index = (uint16_t)(tile_key & 0x7FFF);
       const uint16_t bank = (uint16_t)((tile_key >> 15) & 1);
@@ -288,33 +305,33 @@ void pblv_player_render(const PblvPlayer *player, GBitmap *out) {
 
       const uint8_t *tile = (bank < 2 && tile_index < 384) ? player->tiles[bank][tile_index] : player->tiles[0][0];
 
-      for(uint8_t py = 0; py < 8; py++) {
-        const int y = (int)ty * 8 + py;
-        if(y < 0 || y >= 144) {
-          continue;
+      for(uint8_t py = 0; py < PBLV_TILE_PX; py++) {
+        const int y = (int)ty * (int)PBLV_TILE_PX + py;
+        if(y < 0 || y >= size.h) {
+          break;
         }
 
         if(fmt == GBitmapFormat8Bit) {
           uint8_t *row = data + y * row_bytes;
-          for(uint8_t px = 0; px < 8; px++) {
-            const int x = (int)tx * 8 + px;
-            if(x < 0 || x >= 160) {
-              continue;
+          for(uint8_t px = 0; px < PBLV_TILE_PX; px++) {
+            const int x = (int)tx * (int)PBLV_TILE_PX + px;
+            if(x < 0 || x >= size.w) {
+              break;
             }
 
-            const uint8_t p = prv_tile_px(tile, px, py);
+            const uint8_t p = prv_tile_px_16x16(tile, px, py);
             const uint8_t gcol = player->palette_bytes[pal * 4 + p];
             row[x] = gcol;
           }
         } else if(fmt == GBitmapFormat1Bit) {
           uint8_t *row = data + y * row_bytes;
-          for(uint8_t px = 0; px < 8; px++) {
-            const int x = (int)tx * 8 + px;
-            if(x < 0 || x >= 160) {
-              continue;
+          for(uint8_t px = 0; px < PBLV_TILE_PX; px++) {
+            const int x = (int)tx * (int)PBLV_TILE_PX + px;
+            if(x < 0 || x >= size.w) {
+              break;
             }
 
-            const uint8_t p = prv_tile_px(tile, px, py);
+            const uint8_t p = prv_tile_px_16x16(tile, px, py);
             const uint8_t gcol = player->palette_bytes[pal * 4 + p];
             const uint8_t dark = prv_gcolor_to_bw(gcol);
 
