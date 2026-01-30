@@ -12,8 +12,6 @@
 
 static Window *s_window;
 static Layer *s_canvas_layer;
-
-static GBitmap *s_framebuffer;
 static AppTimer *s_timer;
 
 static PblvPlayer s_player;
@@ -22,16 +20,22 @@ static bool s_player_ready;
 static void prv_schedule_next_frame(void);
 
 static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
-  if(!s_framebuffer) {
+  if(!s_player_ready) {
     return;
   }
 
-  const GRect fb_bounds = gbitmap_get_bounds(s_framebuffer);
-  graphics_draw_bitmap_in_rect(ctx, s_framebuffer, GRect(0, 0, fb_bounds.size.w, fb_bounds.size.h));
+  GBitmap *fb = graphics_capture_frame_buffer(ctx);
+  if(!fb) {
+    return;
+  }
+
+  pblv_player_render(&s_player, fb);
+
+  graphics_release_frame_buffer(ctx, fb);
 }
 
 static void prv_timer_cb(void *context) {
-  if(!s_player_ready || !s_framebuffer) {
+  if(!s_player_ready) {
     return;
   }
 
@@ -40,8 +44,7 @@ static void prv_timer_cb(void *context) {
     return;
   }
 
-  // Render new state.
-  pblv_player_render(&s_player, s_framebuffer);
+  // Request a redraw; we render into the system framebuffer in update_proc.
   layer_mark_dirty(s_canvas_layer);
 
   // Queue next frame.
@@ -67,18 +70,11 @@ static void prv_window_load(Window *window) {
   layer_set_update_proc(s_canvas_layer, prv_canvas_update_proc);
   layer_add_child(window_layer, s_canvas_layer);
 
-#if PBL_COLOR
-  s_framebuffer = gbitmap_create_blank(bounds.size, GBitmapFormat8Bit);
-#else
-  s_framebuffer = gbitmap_create_blank(bounds.size, GBitmapFormat1Bit);
-#endif
-
   const ResHandle res = resource_get_handle(RESOURCE_ID_BEACH_PBLV);
   s_player_ready = pblv_player_init(&s_player, res);
 
   if(s_player_ready) {
     // Render keyframe immediately.
-    pblv_player_render(&s_player, s_framebuffer);
     layer_mark_dirty(s_canvas_layer);
 
     // Schedule the first frame.
@@ -97,11 +93,6 @@ static void prv_window_unload(Window *window) {
   if(s_player_ready) {
     pblv_player_deinit(&s_player);
     s_player_ready = false;
-  }
-
-  if(s_framebuffer) {
-    gbitmap_destroy(s_framebuffer);
-    s_framebuffer = NULL;
   }
 
   layer_destroy(s_canvas_layer);
