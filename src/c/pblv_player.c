@@ -315,7 +315,7 @@ void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
         palette[1].argb = pal_bytes[1];
         palette[2].argb = pal_bytes[2];
         palette[3].argb = pal_bytes[3];
-        gbitmap_set_palette(player->scratch_tile, palette, 4);
+        gbitmap_set_palette(player->scratch_tile, palette, false);
         last_pal = pal;
       }
 
