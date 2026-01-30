@@ -23,6 +23,12 @@ bool pblv_player_init(PblvPlayer *player, ResHandle res) {
   memset(player, 0, sizeof(*player));
   player->res = res;
 
+  player->scratch_tile = gbitmap_create_blank(GSize(PBLV_TILE_PX, PBLV_TILE_PX), GBitmapFormat2BitPalette);
+  if(!player->scratch_tile) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed to allocate scratch tile");
+    return false;
+  }
+
   uint8_t header[32];
   if(!prv_res_read(res, 0, header, sizeof(header))) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed to read header");
@@ -158,7 +164,10 @@ void pblv_player_deinit(PblvPlayer *player) {
   if(!player) {
     return;
   }
-  // Nothing heap-owned inside player.
+  if(player->scratch_tile) {
+    gbitmap_destroy(player->scratch_tile);
+    player->scratch_tile = NULL;
+  }
 }
 
 bool pblv_player_load_next_header(PblvPlayer *player) {
@@ -267,33 +276,28 @@ static uint8_t prv_gcolor_to_bw(uint8_t gcolor8) {
   return lum <= 4;
 }
 
-void pblv_player_render(const PblvPlayer *player, GBitmap *out) {
-  if(!player || !out) {
+void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
+  if(!player || !ctx || !player->scratch_tile) {
     return;
   }
 
-  const GSize size = gbitmap_get_bounds(out).size;
-
+  const GSize size = bounds.size;
   if(size.w <= 0 || size.h <= 0) {
     return;
   }
 
-  uint8_t *data = (uint8_t *)gbitmap_get_data(out);
-  const int row_bytes = gbitmap_get_bytes_per_row(out);
-
-  const GBitmapFormat fmt = gbitmap_get_format(out);
-
-  // Clear the whole output buffer so areas outside the map don't keep old pixels.
-  memset(data, 0, (size_t)row_bytes * (size_t)size.h);
-
   const uint16_t map_w = (player->map_w <= 20) ? player->map_w : 20;
   const uint16_t map_h = (player->map_h <= 18) ? player->map_h : 18;
 
-  // Render the visible portion of the map from origin (0,0) and clip to the output size.
   const uint16_t out_tiles_w = (uint16_t)(((uint16_t)size.w + (PBLV_TILE_PX - 1u)) / PBLV_TILE_PX);
   const uint16_t out_tiles_h = (uint16_t)(((uint16_t)size.h + (PBLV_TILE_PX - 1u)) / PBLV_TILE_PX);
   const uint16_t draw_tiles_w = (out_tiles_w < map_w) ? out_tiles_w : map_w;
   const uint16_t draw_tiles_h = (out_tiles_h < map_h) ? out_tiles_h : map_h;
+
+  graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+
+  uint8_t last_pal = 0xFF;
+  GColor palette[4];
 
   for(uint16_t ty = 0; ty < draw_tiles_h; ty++) {
     for(uint16_t tx = 0; tx < draw_tiles_w; tx++) {
@@ -305,46 +309,21 @@ void pblv_player_render(const PblvPlayer *player, GBitmap *out) {
 
       const uint8_t *tile = (bank < 2 && tile_index < 384) ? player->tiles[bank][tile_index] : player->tiles[0][0];
 
-      for(uint8_t py = 0; py < PBLV_TILE_PX; py++) {
-        const int y = (int)ty * (int)PBLV_TILE_PX + py;
-        if(y < 0 || y >= size.h) {
-          break;
-        }
-
-        if(fmt == GBitmapFormat8Bit) {
-          uint8_t *row = data + y * row_bytes;
-          for(uint8_t px = 0; px < PBLV_TILE_PX; px++) {
-            const int x = (int)tx * (int)PBLV_TILE_PX + px;
-            if(x < 0 || x >= size.w) {
-              break;
-            }
-
-            const uint8_t p = prv_tile_px_16x16(tile, px, py);
-            const uint8_t gcol = player->palette_bytes[pal * 4 + p];
-            row[x] = gcol;
-          }
-        } else if(fmt == GBitmapFormat1Bit) {
-          uint8_t *row = data + y * row_bytes;
-          for(uint8_t px = 0; px < PBLV_TILE_PX; px++) {
-            const int x = (int)tx * (int)PBLV_TILE_PX + px;
-            if(x < 0 || x >= size.w) {
-              break;
-            }
-
-            const uint8_t p = prv_tile_px_16x16(tile, px, py);
-            const uint8_t gcol = player->palette_bytes[pal * 4 + p];
-            const uint8_t dark = prv_gcolor_to_bw(gcol);
-
-            const int byte_index = x >> 3;
-            const uint8_t bit = (uint8_t)(0x80 >> (x & 7));
-            if(dark) {
-              row[byte_index] |= bit;
-            } else {
-              row[byte_index] &= (uint8_t)~bit;
-            }
-          }
-        }
+      if(pal != last_pal) {
+        const uint8_t *pal_bytes = &player->palette_bytes[pal * 4];
+        palette[0].argb = pal_bytes[0];
+        palette[1].argb = pal_bytes[1];
+        palette[2].argb = pal_bytes[2];
+        palette[3].argb = pal_bytes[3];
+        gbitmap_set_palette(player->scratch_tile, palette, 4);
+        last_pal = pal;
       }
+
+      gbitmap_set_data(player->scratch_tile, (uint8_t *)tile, GBitmapFormat2BitPalette, 4, false);
+
+      const int16_t x = (int16_t)(bounds.origin.x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
+      const int16_t y = (int16_t)(bounds.origin.y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
+      graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
     }
   }
 }

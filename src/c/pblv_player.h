@@ -27,6 +27,9 @@ typedef struct {
   uint8_t tiles[2][384][64];           // up to 2 banks, 384 tiles each (16x16, 2bpp)
   PblvMapCell map[20 * 18];            // visible map cells
 
+  // Scratch tile for drawing via GBitmap APIs (owned by player)
+  GBitmap *scratch_tile;
+
   // Playback cursor
   uint32_t frame_index;
   uint32_t frame_offset;
@@ -49,15 +52,14 @@ bool pblv_player_load_next_header(PblvPlayer *player);
 // Applies the pending frame updates (must have pending header loaded).
 bool pblv_player_apply_pending(PblvPlayer *player);
 
-// Renders the current state into an output bitmap.
+// Renders the current state into the provided graphics context.
 // The renderer draws 16x16 tiles starting from visible-map origin (0,0) and clips to the
-// output bitmap bounds. If the output is smaller than the full 20x18 map (320x288 px), the
+// supplied bounds. If the bounds are smaller than the full 20x18 map (320x288 px), the
 // bottom/right will be clipped.
 //
-// Supported output formats:
-// - On color platforms, use GBitmapFormat8Bit.
-// - On B/W (aplite), use GBitmapFormat1Bit.
-void pblv_player_render(const PblvPlayer *player, GBitmap *out);
+// Notes:
+// - Uses a 16x16 GBitmapFormat2BitPalette scratch bitmap and updates its palette per tile.
+void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds);
 
 static inline uint32_t pblv_player_delta_frames_to_ms(uint16_t delta_frames) {
   const uint32_t ms = (uint32_t)delta_frames * 1000u / 60u;

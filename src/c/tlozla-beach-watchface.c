@@ -24,14 +24,8 @@ static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
     return;
   }
 
-  GBitmap *fb = graphics_capture_frame_buffer(ctx);
-  if(!fb) {
-    return;
-  }
-
-  pblv_player_render(&s_player, fb);
-
-  graphics_release_frame_buffer(ctx, fb);
+  const GRect bounds = layer_get_bounds(layer);
+  pblv_player_render(&s_player, ctx, bounds);
 }
 
 static void prv_timer_cb(void *context) {
