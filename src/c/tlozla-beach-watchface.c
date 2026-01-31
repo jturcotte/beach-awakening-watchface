@@ -27,8 +27,8 @@ static bool s_player_ready;
 static GBitmap *s_digits;
 static GBitmap *s_digit_sub[DIGIT_COUNT];
 
-static const int16_t s_digit_x[DIGIT_COUNT] = { 0, 21, 36, 57, 78, 99, 120, 141, 162, 183, 204 };
-static const uint8_t s_digit_w[DIGIT_COUNT] = { 20, 14, 20, 20, 20, 20, 20, 20, 20, 20, 8 };
+static const int16_t s_digit_x[DIGIT_COUNT] = { 0, 42, 72, 114, 156, 198, 240, 282, 324, 366, 408 };
+static const uint8_t s_digit_w[DIGIT_COUNT] = { 40, 28, 40, 40, 40, 40, 40, 40, 40, 40, 16 };
 
 static void prv_schedule_next_frame(void);
 
@@ -61,29 +61,30 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
   const GRect digits_bounds = gbitmap_get_bounds(s_digits);
   const int16_t digit_h = digits_bounds.size.h;
 
+  const int16_t spacing = 2;
   const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
   const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2);
   const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2);
 
-  graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
   // Colon centered.
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[DIGIT_COLON_INDEX],
                                GRect(colon_x, y, colon_w, digit_h));
 
   // Minutes to the right of colon.
-  int16_t x = (int16_t)(colon_x + colon_w);
+  int16_t x = (int16_t)(colon_x + colon_w + spacing);
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_tens],
                                GRect(x, y, s_digit_w[m_tens], digit_h));
-  x = (int16_t)(x + s_digit_w[m_tens]);
+  x = (int16_t)(x + s_digit_w[m_tens] + spacing);
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_ones],
                                GRect(x, y, s_digit_w[m_ones], digit_h));
 
   // Hours to the left of colon.
-  x = (int16_t)(colon_x - s_digit_w[h_ones]);
+  x = (int16_t)(colon_x - spacing - s_digit_w[h_ones]);
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_ones],
                                GRect(x, y, s_digit_w[h_ones], digit_h));
-  x = (int16_t)(x - s_digit_w[h_tens]);
+  x = (int16_t)(x - spacing - s_digit_w[h_tens]);
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
                                GRect(x, y, s_digit_w[h_tens], digit_h));
 }
