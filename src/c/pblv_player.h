@@ -38,6 +38,7 @@ typedef struct {
   // Playback cursor
   uint32_t frame_index;
   uint32_t frame_offset;
+  uint32_t loop_count;
 
   // Next frame header cached for scheduling
   bool has_pending_header;
@@ -48,6 +49,8 @@ typedef struct {
   uint16_t pending_n_obj_pal;
   uint16_t pending_n_oam;
   bool pending_looped;
+  uint16_t pending_frame_index;
+  uint32_t pending_loop_count;
   uint32_t pending_updates_offset;
 } PblvPlayer;
 

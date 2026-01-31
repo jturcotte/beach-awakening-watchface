@@ -231,6 +231,7 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
     player->frame_index = 0;
     player->frame_offset = player->frames_offset;
     looped = true;
+    player->loop_count++;
   }
 
   uint8_t hdr[12];
@@ -246,6 +247,8 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
   player->pending_n_obj_pal = prv_u16le(&hdr[8]);
   player->pending_n_oam = prv_u16le(&hdr[10]);
   player->pending_looped = looped;
+  player->pending_frame_index = (uint16_t)player->frame_index;
+  player->pending_loop_count = player->loop_count;
   player->pending_updates_offset = player->frame_offset + 12;
   player->has_pending_header = true;
 

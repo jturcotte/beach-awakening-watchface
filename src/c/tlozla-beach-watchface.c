@@ -17,6 +17,9 @@
 #define DIGIT_COUNT 11
 #define DIGIT_COLON_INDEX 10
 
+#define LOOP_PAUSE_FRAME_INDEX 3
+#define LOOP_PAUSE_DURATION 2000
+
 static Window *s_window;
 static Layer *s_canvas_layer;
 static AppTimer *s_timer;
@@ -65,7 +68,7 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
   const int16_t spacing = 2;
   const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
   const int16_t colon_offset_x = 0; // static balance tweak
-  const int16_t colon_offset_y = -26; // static balance tweak
+  const int16_t colon_offset_y = -32; // static balance tweak
   const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2 + colon_offset_x);
   const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2 + colon_offset_y);
 
@@ -129,8 +132,8 @@ static void prv_schedule_next_frame(void) {
     return;
   }
   uint32_t ms = pblv_player_delta_frames_to_ms(s_player.pending_delta_frames);
-  if(s_player.pending_looped) {
-    ms += 2000;
+  if(s_player.pending_loop_count > 0 && s_player.pending_frame_index == LOOP_PAUSE_FRAME_INDEX) {
+    ms += LOOP_PAUSE_DURATION;
   }
   s_timer = app_timer_register(ms, prv_timer_cb, NULL);
 }
