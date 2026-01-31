@@ -65,7 +65,7 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
   const int16_t spacing = 2;
   const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
   const int16_t colon_offset_x = -6; // static balance tweak
-  const int16_t colon_offset_y = -20; // static balance tweak
+  const int16_t colon_offset_y = -26; // static balance tweak
   const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2 + colon_offset_x);
   const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2 + colon_offset_y);
 
