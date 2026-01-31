@@ -25,6 +25,11 @@
           "type": "raw",
           "name": "BEACH_PBLV",
           "file": "beach.pblv"
+        },
+        {
+          "type": "bitmap",
+          "name": "DIGITS",
+          "file": "digits.png"
         }
       ]
     }

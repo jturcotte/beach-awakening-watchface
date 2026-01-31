@@ -10,6 +10,13 @@
 #define RESOURCE_ID_BEACH_PBLV 1
 #endif
 
+#ifndef RESOURCE_ID_DIGITS
+#define RESOURCE_ID_DIGITS 2
+#endif
+
+#define DIGIT_COUNT 11
+#define DIGIT_COLON_INDEX 10
+
 static Window *s_window;
 static Layer *s_canvas_layer;
 static AppTimer *s_timer;
@@ -17,7 +24,69 @@ static AppTimer *s_timer;
 static PblvPlayer s_player;
 static bool s_player_ready;
 
+static GBitmap *s_digits;
+static GBitmap *s_digit_sub[DIGIT_COUNT];
+
+static const int16_t s_digit_x[DIGIT_COUNT] = { 0, 21, 36, 57, 78, 99, 120, 141, 162, 183, 204 };
+static const uint8_t s_digit_w[DIGIT_COUNT] = { 20, 14, 20, 20, 20, 20, 20, 20, 20, 20, 8 };
+
 static void prv_schedule_next_frame(void);
+
+static void prv_draw_time(GContext *ctx, GRect bounds) {
+  if(!s_digits || !s_digit_sub[DIGIT_COLON_INDEX]) {
+    return;
+  }
+
+  time_t now = time(NULL);
+  struct tm *t = localtime(&now);
+  if(!t) {
+    return;
+  }
+
+  int hour = t->tm_hour;
+  const int minute = t->tm_min;
+
+  if(!clock_is_24h_style()) {
+    hour %= 12;
+    if(hour == 0) {
+      hour = 12;
+    }
+  }
+
+  const int h_tens = hour / 10;
+  const int h_ones = hour % 10;
+  const int m_tens = minute / 10;
+  const int m_ones = minute % 10;
+
+  const GRect digits_bounds = gbitmap_get_bounds(s_digits);
+  const int16_t digit_h = digits_bounds.size.h;
+
+  const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
+  const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2);
+  const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2);
+
+  graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+
+  // Colon centered.
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[DIGIT_COLON_INDEX],
+                               GRect(colon_x, y, colon_w, digit_h));
+
+  // Minutes to the right of colon.
+  int16_t x = (int16_t)(colon_x + colon_w);
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_tens],
+                               GRect(x, y, s_digit_w[m_tens], digit_h));
+  x = (int16_t)(x + s_digit_w[m_tens]);
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_ones],
+                               GRect(x, y, s_digit_w[m_ones], digit_h));
+
+  // Hours to the left of colon.
+  x = (int16_t)(colon_x - s_digit_w[h_ones]);
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_ones],
+                               GRect(x, y, s_digit_w[h_ones], digit_h));
+  x = (int16_t)(x - s_digit_w[h_tens]);
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
+                               GRect(x, y, s_digit_w[h_tens], digit_h));
+}
 
 static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   if(!s_player_ready) {
@@ -26,6 +95,7 @@ static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
 
   const GRect bounds = layer_get_bounds(layer);
   pblv_player_render(&s_player, ctx, bounds);
+  prv_draw_time(ctx, bounds);
 }
 
 static void prv_timer_cb(void *context) {
@@ -67,6 +137,16 @@ static void prv_window_load(Window *window) {
   const ResHandle res = resource_get_handle(RESOURCE_ID_BEACH_PBLV);
   s_player_ready = pblv_player_init(&s_player, res);
 
+  s_digits = gbitmap_create_with_resource(RESOURCE_ID_DIGITS);
+  if(s_digits) {
+    const int16_t digits_h = gbitmap_get_bounds(s_digits).size.h;
+    for(int i = 0; i < DIGIT_COUNT; i++) {
+      s_digit_sub[i] = gbitmap_create_as_sub_bitmap(s_digits, GRect(s_digit_x[i], 0, s_digit_w[i], digits_h));
+    }
+  } else {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to load digits.png");
+  }
+
   if(s_player_ready) {
     // Render keyframe immediately.
     layer_mark_dirty(s_canvas_layer);
@@ -87,6 +167,17 @@ static void prv_window_unload(Window *window) {
   if(s_player_ready) {
     pblv_player_deinit(&s_player);
     s_player_ready = false;
+  }
+
+  for(int i = 0; i < DIGIT_COUNT; i++) {
+    if(s_digit_sub[i]) {
+      gbitmap_destroy(s_digit_sub[i]);
+      s_digit_sub[i] = NULL;
+    }
+  }
+  if(s_digits) {
+    gbitmap_destroy(s_digits);
+    s_digits = NULL;
   }
 
   layer_destroy(s_canvas_layer);
