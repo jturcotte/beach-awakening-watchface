@@ -55,6 +55,7 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
 
   const int h_tens = hour / 10;
   const int h_ones = hour % 10;
+  const bool has_h_tens = (h_tens > 0);
   const int m_tens = minute / 10;
   const int m_ones = minute % 10;
 
@@ -63,8 +64,10 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
 
   const int16_t spacing = 2;
   const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
-  const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2);
-  const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2);
+  const int16_t colon_offset_x = -6; // static balance tweak
+  const int16_t colon_offset_y = -20; // static balance tweak
+  const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2 + colon_offset_x);
+  const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2 + colon_offset_y);
 
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
@@ -84,9 +87,11 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
   x = (int16_t)(colon_x - spacing - s_digit_w[h_ones]);
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_ones],
                                GRect(x, y, s_digit_w[h_ones], digit_h));
-  x = (int16_t)(x - spacing - s_digit_w[h_tens]);
-  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
-                               GRect(x, y, s_digit_w[h_tens], digit_h));
+  if(has_h_tens) {
+    x = (int16_t)(x - spacing - s_digit_w[h_tens]);
+    graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
+                                 GRect(x, y, s_digit_w[h_tens], digit_h));
+  }
 }
 
 static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
