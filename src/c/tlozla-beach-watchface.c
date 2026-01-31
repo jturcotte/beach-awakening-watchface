@@ -64,7 +64,7 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
 
   const int16_t spacing = 2;
   const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
-  const int16_t colon_offset_x = -6; // static balance tweak
+  const int16_t colon_offset_x = 0; // static balance tweak
   const int16_t colon_offset_y = -26; // static balance tweak
   const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2 + colon_offset_x);
   const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2 + colon_offset_y);
@@ -128,7 +128,10 @@ static void prv_schedule_next_frame(void) {
   if(!pblv_player_load_next_header(&s_player)) {
     return;
   }
-  const uint32_t ms = pblv_player_delta_frames_to_ms(s_player.pending_delta_frames);
+  uint32_t ms = pblv_player_delta_frames_to_ms(s_player.pending_delta_frames);
+  if(s_player.pending_looped) {
+    ms += 2000;
+  }
   s_timer = app_timer_register(ms, prv_timer_cb, NULL);
 }
 

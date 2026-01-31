@@ -226,9 +226,11 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
 
   // Loop frames forever. This intentionally does NOT re-apply the keyframe;
   // well-formed PBLV files can make the frame stream cyclic.
+  bool looped = false;
   if(player->frame_index >= player->n_frames) {
     player->frame_index = 0;
     player->frame_offset = player->frames_offset;
+    looped = true;
   }
 
   uint8_t hdr[12];
@@ -243,6 +245,7 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
   player->pending_n_map = prv_u16le(&hdr[6]);
   player->pending_n_obj_pal = prv_u16le(&hdr[8]);
   player->pending_n_oam = prv_u16le(&hdr[10]);
+  player->pending_looped = looped;
   player->pending_updates_offset = player->frame_offset + 12;
   player->has_pending_header = true;
 

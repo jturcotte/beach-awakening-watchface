@@ -47,6 +47,7 @@ typedef struct {
   uint16_t pending_n_map;
   uint16_t pending_n_obj_pal;
   uint16_t pending_n_oam;
+  bool pending_looped;
   uint32_t pending_updates_offset;
 } PblvPlayer;
 
