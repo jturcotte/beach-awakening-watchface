@@ -82,6 +82,8 @@ bool pblv_player_init(PblvPlayer *player, ResHandle res) {
   }
   off += sizeof(keyf_params);
 
+  player->lcdc = keyf_params[1];
+
   const uint16_t tile_count = prv_u16le(&keyf_params[8]);
   const uint16_t bank_count = prv_u16le(&keyf_params[10]);
 
@@ -151,6 +153,53 @@ bool pblv_player_init(PblvPlayer *player, ResHandle res) {
     off += 4;
   }
 
+  // OBJ palettes
+  uint8_t obj_pal_hdr[2];
+  if(!prv_res_read(res, off, obj_pal_hdr, sizeof(obj_pal_hdr))) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed to read OBJ palette length");
+    return false;
+  }
+  const uint16_t n_obj_palette_bytes = prv_u16le(obj_pal_hdr);
+  off += 2;
+
+  if(n_obj_palette_bytes != sizeof(player->obj_palette_bytes)) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "PBLV: nObjPaletteBytes=%u (expected %u)",
+            (unsigned)n_obj_palette_bytes, (unsigned)sizeof(player->obj_palette_bytes));
+  }
+
+  const uint16_t obj_pal_to_read = (n_obj_palette_bytes < sizeof(player->obj_palette_bytes)) ? n_obj_palette_bytes : sizeof(player->obj_palette_bytes);
+  if(!prv_res_read(res, off, player->obj_palette_bytes, obj_pal_to_read)) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed to read OBJ palette bytes");
+    return false;
+  }
+  if(obj_pal_to_read < sizeof(player->obj_palette_bytes)) {
+    memset(&player->obj_palette_bytes[obj_pal_to_read], 0, sizeof(player->obj_palette_bytes) - obj_pal_to_read);
+  }
+  off += n_obj_palette_bytes;
+
+  // OAM data
+  uint8_t oam_hdr[2];
+  if(!prv_res_read(res, off, oam_hdr, sizeof(oam_hdr))) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed to read OAM length");
+    return false;
+  }
+  const uint16_t oam_bytes = prv_u16le(oam_hdr);
+  off += 2;
+
+  if(oam_bytes != 160u) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "PBLV: oamBytes=%u (expected 160)", (unsigned)oam_bytes);
+  }
+
+  const uint16_t oam_to_read = (oam_bytes < 160u) ? oam_bytes : 160u;
+  if(!prv_res_read(res, off, player->oam, oam_to_read)) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed to read OAM data");
+    return false;
+  }
+  if(oam_to_read < 160u) {
+    memset(((uint8_t *)player->oam) + oam_to_read, 0, 160u - oam_to_read);
+  }
+  off += oam_bytes;
+
   player->frame_index = 0;
   player->frame_offset = player->frames_offset;
   player->has_pending_header = false;
@@ -182,7 +231,7 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
     player->frame_offset = player->frames_offset;
   }
 
-  uint8_t hdr[8];
+  uint8_t hdr[12];
   if(!prv_res_read(player->res, player->frame_offset, hdr, sizeof(hdr))) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "PBLV: failed reading frame header idx=%lu", (unsigned long)player->frame_index);
     return false;
@@ -192,7 +241,9 @@ bool pblv_player_load_next_header(PblvPlayer *player) {
   player->pending_n_pal = prv_u16le(&hdr[2]);
   player->pending_n_tile = prv_u16le(&hdr[4]);
   player->pending_n_map = prv_u16le(&hdr[6]);
-  player->pending_updates_offset = player->frame_offset + 8;
+  player->pending_n_obj_pal = prv_u16le(&hdr[8]);
+  player->pending_n_oam = prv_u16le(&hdr[10]);
+  player->pending_updates_offset = player->frame_offset + 12;
   player->has_pending_header = true;
 
   return true;
@@ -251,6 +302,34 @@ bool pblv_player_apply_pending(PblvPlayer *player) {
     off += 6;
   }
 
+  // OBJ palette updates
+  for(uint16_t i = 0; i < player->pending_n_obj_pal; i++) {
+    uint8_t rec[4];
+    if(!prv_res_read(player->res, off, rec, sizeof(rec))) {
+      return false;
+    }
+    const uint8_t pal = rec[0];
+    const uint8_t col = rec[1];
+    const uint8_t gcol = rec[2];
+    if(pal < 8 && col < 4) {
+      player->obj_palette_bytes[pal * 4 + col] = gcol;
+    }
+    off += 4;
+  }
+
+  // OAM updates
+  for(uint16_t i = 0; i < player->pending_n_oam; i++) {
+    uint8_t rec[8];
+    if(!prv_res_read(player->res, off, rec, sizeof(rec))) {
+      return false;
+    }
+    const uint16_t index = prv_u16le(&rec[0]);
+    if(index < 40u) {
+      memcpy(player->oam[index], &rec[4], 4);
+    }
+    off += 8;
+  }
+
   // Advance
   player->frame_offset = off;
   player->frame_index++;
@@ -266,17 +345,25 @@ static uint8_t prv_tile_px_16x16(const uint8_t tile[PBLV_TILE_BYTES], uint8_t x,
   return (b >> shift) & 0x03;
 }
 
-static uint8_t prv_gcolor_to_bw(uint8_t gcolor8) {
-  // gcolor8 = 0bAARRGGBB (2 bits per channel). Use simple luminance-ish threshold.
-  const uint8_t r = (gcolor8 >> 4) & 0x03;
-  const uint8_t g = (gcolor8 >> 2) & 0x03;
-  const uint8_t b = (gcolor8 >> 0) & 0x03;
-  const uint8_t lum = (uint8_t)(r + g + b); // 0..9
-  // Return 1 for "dark" pixels.
-  return lum <= 4;
+static void prv_tile_set_px_16x16(uint8_t tile[PBLV_TILE_BYTES], uint8_t x, uint8_t y, uint8_t p) {
+  const uint8_t idx = (uint8_t)(y * 4 + (x >> 2));
+  const uint8_t shift = (uint8_t)(6 - (x & 3) * 2);
+  tile[idx] = (uint8_t)((tile[idx] & ~(0x03 << shift)) | ((p & 0x03) << shift));
 }
 
-void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
+static void prv_copy_tile_flipped(uint8_t dst[PBLV_TILE_BYTES], const uint8_t src[PBLV_TILE_BYTES], bool xflip, bool yflip) {
+  memset(dst, 0, PBLV_TILE_BYTES);
+  for(uint8_t y = 0; y < PBLV_TILE_PX; y++) {
+    for(uint8_t x = 0; x < PBLV_TILE_PX; x++) {
+      const uint8_t sx = xflip ? (uint8_t)(PBLV_TILE_PX - 1 - x) : x;
+      const uint8_t sy = yflip ? (uint8_t)(PBLV_TILE_PX - 1 - y) : y;
+      const uint8_t p = prv_tile_px_16x16(src, sx, sy);
+      prv_tile_set_px_16x16(dst, x, y, p);
+    }
+  }
+}
+
+void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds) {
   if(!player || !ctx || !player->scratch_tile) {
     return;
   }
@@ -316,7 +403,8 @@ void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
         palette[1].argb = pal_bytes[1];
         palette[2].argb = pal_bytes[2];
         palette[3].argb = pal_bytes[3];
-        gbitmap_set_palette(player->scratch_tile, palette, false);
+        const bool free_on_destroy = false;
+        gbitmap_set_palette(player->scratch_tile, palette, free_on_destroy);
         last_pal = pal;
       }
 
@@ -325,6 +413,77 @@ void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds) {
       const int16_t x = (int16_t)(bounds.origin.x + offset_x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
       const int16_t y = (int16_t)(bounds.origin.y + offset_y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
       graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
+    }
+  }
+
+  // Sprites (OBJ)
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
+
+  uint8_t last_obj_pal = 0xFF;
+  for(uint16_t i = 0; i < 40; i++) {
+    const uint8_t oy = player->oam[i][0];
+    const uint8_t ox = player->oam[i][1];
+    const uint8_t tile_id = player->oam[i][2];
+    const uint8_t attr = player->oam[i][3];
+
+    if(ox == 0 || oy == 0) {
+      continue;
+    }
+
+    const uint8_t pal = (uint8_t)(attr & 0x07);
+    const uint8_t bank = (uint8_t)((attr >> 3) & 0x01);
+    const bool xflip = (attr & 0x20) != 0;
+    const bool yflip = (attr & 0x40) != 0;
+
+    if(pal != last_obj_pal) {
+      const uint8_t *pal_bytes = &player->obj_palette_bytes[pal * 4];
+      palette[0].argb = (uint8_t)(pal_bytes[0] & 0x3F); // transparent color 0
+      palette[1].argb = pal_bytes[1];
+      palette[2].argb = pal_bytes[2];
+      palette[3].argb = pal_bytes[3];
+      const bool free_on_destroy = false;
+      gbitmap_set_palette(player->scratch_tile, palette, free_on_destroy);
+      last_obj_pal = pal;
+    }
+
+    const bool tall = (player->lcdc & 0x04) != 0; // OBJ size: 8x16
+    const uint16_t base_tile = tall ? (uint16_t)(tile_id & 0xFE) : tile_id;
+
+    const int16_t x = (int16_t)(bounds.origin.x + offset_x + ((int16_t)ox - 8) * 2);
+    const int16_t y = (int16_t)(bounds.origin.y + offset_y + ((int16_t)oy - 16) * 2);
+
+    const uint16_t tile0_index = base_tile;
+    const uint16_t tile1_index = (uint16_t)(base_tile + 1);
+
+    const uint8_t *tile0 = (bank < 2 && tile0_index < 384) ? player->tiles[bank][tile0_index] : player->tiles[0][0];
+    const uint8_t *tile1 = (bank < 2 && tile1_index < 384) ? player->tiles[bank][tile1_index] : player->tiles[0][0];
+
+    if(tall && yflip) {
+      const uint8_t *tmp = tile0;
+      tile0 = tile1;
+      tile1 = tmp;
+    }
+
+    if(xflip || yflip) {
+      prv_copy_tile_flipped(player->scratch_pixels, tile0, xflip, yflip);
+      gbitmap_set_data(player->scratch_tile, player->scratch_pixels, GBitmapFormat2BitPalette, 4, false);
+    } else {
+      gbitmap_set_data(player->scratch_tile, (uint8_t *)tile0, GBitmapFormat2BitPalette, 4, false);
+    }
+
+    graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
+
+    if(tall) {
+      const int16_t y2 = (int16_t)(y + (int16_t)PBLV_TILE_PX);
+
+      if(xflip || yflip) {
+        prv_copy_tile_flipped(player->scratch_pixels, tile1, xflip, yflip);
+        gbitmap_set_data(player->scratch_tile, player->scratch_pixels, GBitmapFormat2BitPalette, 4, false);
+      } else {
+        gbitmap_set_data(player->scratch_tile, (uint8_t *)tile1, GBitmapFormat2BitPalette, 4, false);
+      }
+
+      graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y2, PBLV_TILE_PX, PBLV_TILE_PX));
     }
   }
 }

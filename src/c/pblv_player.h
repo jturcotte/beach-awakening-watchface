@@ -22,13 +22,18 @@ typedef struct {
   uint16_t map_h;
   uint32_t flags;
 
+  uint8_t lcdc;
+
   // Decoded state
   uint8_t palette_bytes[32];           // 8 palettes x 4 colors (GColor8)
+  uint8_t obj_palette_bytes[32];       // 8 OBJ palettes x 4 colors (GColor8)
   uint8_t tiles[2][384][64];           // up to 2 banks, 384 tiles each (16x16, 2bpp)
   PblvMapCell map[20 * 18];            // visible map cells
+  uint8_t oam[40][4];                  // raw OAM entries (40 sprites x 4 bytes)
 
   // Scratch tile for drawing via GBitmap APIs (owned by player)
   GBitmap *scratch_tile;
+  uint8_t scratch_pixels[64];
 
   // Playback cursor
   uint32_t frame_index;
@@ -40,6 +45,8 @@ typedef struct {
   uint16_t pending_n_pal;
   uint16_t pending_n_tile;
   uint16_t pending_n_map;
+  uint16_t pending_n_obj_pal;
+  uint16_t pending_n_oam;
   uint32_t pending_updates_offset;
 } PblvPlayer;
 
@@ -59,7 +66,7 @@ bool pblv_player_apply_pending(PblvPlayer *player);
 //
 // Notes:
 // - Uses a 16x16 GBitmapFormat2BitPalette scratch bitmap and updates its palette per tile.
-void pblv_player_render(const PblvPlayer *player, GContext *ctx, GRect bounds);
+void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds);
 
 static inline uint32_t pblv_player_delta_frames_to_ms(uint16_t delta_frames) {
   const uint32_t ms = (uint32_t)delta_frames * 1000u / 60u;
