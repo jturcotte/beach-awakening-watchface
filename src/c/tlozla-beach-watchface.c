@@ -16,9 +16,10 @@
 
 #define DIGIT_COUNT 11
 #define DIGIT_COLON_INDEX 10
+#define TIME_OFFSET_Y -28
 
 #define LOOP_PAUSE_FRAME_INDEX 3
-#define LOOP_PAUSE_DURATION 2000
+#define LOOP_PAUSE_DURATION 5000
 
 static Window *s_window;
 static Layer *s_canvas_layer;
@@ -67,34 +68,38 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
 
   const int16_t spacing = 2;
   const int16_t colon_w = s_digit_w[DIGIT_COLON_INDEX];
-  const int16_t colon_offset_x = 0; // static balance tweak
-  const int16_t colon_offset_y = -32; // static balance tweak
-  const int16_t colon_x = (int16_t)(bounds.origin.x + (bounds.size.w - colon_w) / 2 + colon_offset_x);
-  const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2 + colon_offset_y);
+  const int16_t total_w = (int16_t)(
+      (has_h_tens ? (s_digit_w[h_tens] + spacing) : 0) +
+      s_digit_w[h_ones] + spacing +
+      colon_w + spacing +
+      s_digit_w[m_tens] + spacing +
+      s_digit_w[m_ones]);
+
+  int16_t x = (int16_t)(bounds.origin.x + (bounds.size.w - total_w) / 2);
+  const int16_t y = (int16_t)(bounds.origin.y + (bounds.size.h - digit_h) / 2 + TIME_OFFSET_Y);
 
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
-  // Colon centered.
-  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[DIGIT_COLON_INDEX],
-                               GRect(colon_x, y, colon_w, digit_h));
+  if(has_h_tens) {
+    graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
+                                 GRect(x, y, s_digit_w[h_tens], digit_h));
+    x = (int16_t)(x + s_digit_w[h_tens] + spacing);
+  }
 
-  // Minutes to the right of colon.
-  int16_t x = (int16_t)(colon_x + colon_w + spacing);
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_ones],
+                               GRect(x, y, s_digit_w[h_ones], digit_h));
+  x = (int16_t)(x + s_digit_w[h_ones] + spacing);
+
+  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[DIGIT_COLON_INDEX],
+                               GRect(x, y, colon_w, digit_h));
+  x = (int16_t)(x + colon_w + spacing);
+
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_tens],
                                GRect(x, y, s_digit_w[m_tens], digit_h));
   x = (int16_t)(x + s_digit_w[m_tens] + spacing);
+
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_ones],
                                GRect(x, y, s_digit_w[m_ones], digit_h));
-
-  // Hours to the left of colon.
-  x = (int16_t)(colon_x - spacing - s_digit_w[h_ones]);
-  graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_ones],
-                               GRect(x, y, s_digit_w[h_ones], digit_h));
-  if(has_h_tens) {
-    x = (int16_t)(x - spacing - s_digit_w[h_tens]);
-    graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
-                                 GRect(x, y, s_digit_w[h_tens], digit_h));
-  }
 }
 
 static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
