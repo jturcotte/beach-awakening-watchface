@@ -387,8 +387,13 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds) {
 
   graphics_context_set_compositing_mode(ctx, GCompOpAssign);
 
+#ifdef PBL_PLATFORM_EMERY
   const int16_t offset_x = -60;
   const int16_t offset_y = -48;
+#elif PBL_PLATFORM_GABBRO
+  const int16_t offset_x = -30;
+  const int16_t offset_y = -16;
+#endif
 
   uint8_t last_pal = 0xFF;
   GColor palette[4];
