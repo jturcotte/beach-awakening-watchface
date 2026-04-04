@@ -52,10 +52,11 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
     return;
   }
 
+  const bool is_24h = clock_is_24h_style();
   int hour = t->tm_hour;
   const int minute = t->tm_min;
 
-  if(!clock_is_24h_style()) {
+  if(!is_24h) {
     hour %= 12;
     if(hour == 0) {
       hour = 12;
@@ -64,7 +65,7 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
 
   const int h_tens = hour / 10;
   const int h_ones = hour % 10;
-  const bool has_h_tens = (h_tens > 0);
+  const bool has_h_tens = is_24h || (h_tens > 0);
   const int m_tens = minute / 10;
   const int m_ones = minute % 10;
 
