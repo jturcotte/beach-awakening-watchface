@@ -20,7 +20,7 @@
 #ifdef PBL_PLATFORM_EMERY
 #define TIME_OFFSET_Y -28
 #elif PBL_PLATFORM_GABBRO
-#define TIME_OFFSET_Y 0
+#define TIME_OFFSET_Y -12
 #endif
 
 #define LOOP_PAUSE_FRAME_INDEX 3
