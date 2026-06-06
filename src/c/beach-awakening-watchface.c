@@ -1,5 +1,5 @@
 #include <pebble.h>
-
+#include <message_keys.auto.h>
 #include "pblv_player.h"
 
 // This project compiles app sources into a shared object dir (build/src/...), while resource IDs
@@ -24,7 +24,8 @@
 #endif
 
 #define LOOP_PAUSE_FRAME_INDEX 3
-#define LOOP_PAUSE_DURATION 5000
+#define LOOP_PAUSE_DURATION_DEFAULT 5000
+#define LOOP_PAUSE_DURATION_TICK_TRIGGER 60000
 
 static Window *s_window;
 static Layer *s_canvas_layer;
@@ -32,6 +33,9 @@ static AppTimer *s_timer;
 
 static PblvPlayer s_player;
 static bool s_player_ready;
+static uint32_t s_loop_pause_duration = LOOP_PAUSE_DURATION_DEFAULT;
+static bool s_waiting_for_tick_loop;
+static uint32_t s_waiting_for_tick_delay_ms;
 
 static GBitmap *s_digits;
 static GBitmap *s_digit_sub[DIGIT_COUNT];
@@ -39,7 +43,66 @@ static GBitmap *s_digit_sub[DIGIT_COUNT];
 static const int16_t s_digit_x[DIGIT_COUNT] = { 0, 42, 72, 114, 156, 198, 240, 282, 324, 366, 408 };
 static const uint8_t s_digit_w[DIGIT_COUNT] = { 40, 28, 40, 40, 40, 40, 40, 40, 40, 40, 16 };
 
+static uint32_t prv_loop_pause_duration_from_int(int32_t candidate) {
+  switch(candidate) {
+    case 0:
+    case 2000:
+    case 5000:
+    case 10000:
+    case 15000:
+    case 30000:
+    case 60000:
+      return (uint32_t)candidate;
+    default:
+      return LOOP_PAUSE_DURATION_DEFAULT;
+  }
+}
+
+static void prv_set_loop_pause_duration(uint32_t duration_ms) {
+  s_loop_pause_duration = duration_ms;
+  persist_write_int(MESSAGE_KEY_ANIMATION_LOOP_DELAY, (int32_t)duration_ms);
+}
+
+static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
+  Tuple *loop_pause = dict_find(iter, MESSAGE_KEY_ANIMATION_LOOP_DELAY);
+  if(!loop_pause) {
+    return;
+  }
+
+  uint32_t duration_ms = LOOP_PAUSE_DURATION_DEFAULT;
+  switch(loop_pause->type) {
+    case TUPLE_INT:
+      duration_ms = prv_loop_pause_duration_from_int(loop_pause->value->int32);
+      break;
+    case TUPLE_UINT:
+      duration_ms = prv_loop_pause_duration_from_int((int32_t)loop_pause->value->uint32);
+      break;
+    default:
+      return;
+  }
+
+  prv_set_loop_pause_duration(duration_ms);
+}
+
 static void prv_schedule_next_frame(void);
+static void prv_timer_cb(void *context);
+
+static void prv_schedule_frame_after_delay(uint32_t ms) {
+  s_timer = app_timer_register(ms, prv_timer_cb, NULL);
+}
+
+static void prv_tick_handler(struct tm *tick_time, TimeUnits units_changed) {
+  if(s_canvas_layer) {
+    layer_mark_dirty(s_canvas_layer);
+  }
+
+  if(!s_waiting_for_tick_loop) {
+    return;
+  }
+
+  s_waiting_for_tick_loop = false;
+  prv_schedule_frame_after_delay(s_waiting_for_tick_delay_ms);
+}
 
 static void prv_draw_time(GContext *ctx, GRect bounds) {
   if(!s_digits || !s_digit_sub[DIGIT_COLON_INDEX]) {
@@ -119,6 +182,8 @@ static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void prv_timer_cb(void *context) {
+  s_timer = NULL;
+
   if(!s_player_ready) {
     return;
   }
@@ -142,11 +207,22 @@ static void prv_schedule_next_frame(void) {
   if(!pblv_player_load_next_header(&s_player)) {
     return;
   }
-  uint32_t ms = pblv_player_delta_frames_to_ms(s_player.pending_delta_frames);
-  if(s_player.pending_loop_count > 0 && s_player.pending_frame_index == LOOP_PAUSE_FRAME_INDEX) {
-    ms += LOOP_PAUSE_DURATION;
+
+  const uint32_t frame_delay_ms = pblv_player_delta_frames_to_ms(s_player.pending_delta_frames);
+
+  if(s_loop_pause_duration == LOOP_PAUSE_DURATION_TICK_TRIGGER && s_player.pending_looped) {
+    s_waiting_for_tick_loop = true;
+    s_waiting_for_tick_delay_ms = frame_delay_ms;
+    return;
   }
-  s_timer = app_timer_register(ms, prv_timer_cb, NULL);
+
+  uint32_t extra_delay_ms = 0;
+  if(s_loop_pause_duration != LOOP_PAUSE_DURATION_TICK_TRIGGER
+      && s_player.pending_loop_count > 0
+      && s_player.pending_frame_index == LOOP_PAUSE_FRAME_INDEX) {
+    extra_delay_ms = s_loop_pause_duration;
+  }
+  prv_schedule_frame_after_delay(frame_delay_ms + extra_delay_ms);
 }
 
 static void prv_window_load(Window *window) {
@@ -207,6 +283,15 @@ static void prv_window_unload(Window *window) {
 }
 
 static void prv_init(void) {
+  app_message_register_inbox_received(prv_inbox_received_handler);
+  app_message_open(128, 16);
+  tick_timer_service_subscribe(MINUTE_UNIT, prv_tick_handler);
+
+  if(persist_exists(MESSAGE_KEY_ANIMATION_LOOP_DELAY)) {
+    s_loop_pause_duration = prv_loop_pause_duration_from_int(
+        persist_read_int(MESSAGE_KEY_ANIMATION_LOOP_DELAY));
+  }
+
   s_window = window_create();
   window_set_window_handlers(s_window, (WindowHandlers) {
     .load = prv_window_load,
@@ -217,6 +302,7 @@ static void prv_init(void) {
 }
 
 static void prv_deinit(void) {
+  tick_timer_service_unsubscribe();
   window_destroy(s_window);
 }
 

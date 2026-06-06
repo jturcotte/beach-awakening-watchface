@@ -2,14 +2,30 @@
   "name": "beach-awakening-watchface",
   "author": "jturcotte",
   "version": "1.0.0",
-  "keywords": ["zelda", "link", "link's", "awakening", "beach", "sea", "ocean", "sunrise", "sunset", "pixel"],
+  "keywords": [
+    "zelda",
+    "link",
+    "link's",
+    "awakening",
+    "beach",
+    "sea",
+    "ocean",
+    "sunrise",
+    "sunset",
+    "pixel"
+  ],
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "@rebble/clay": "^1.0.8"
+  },
   "pebble": {
     "displayName": "Beach Awakening",
     "uuid": "e75f343a-cc8b-4ef7-9c6e-642b36fb7155",
     "sdkVersion": "3",
     "enableMultiJS": true,
+    "capabilities": [
+      "configurable"
+    ],
     "targetPlatforms": [
       "emery",
       "gabbro"
@@ -18,7 +34,7 @@
       "watchface": true
     },
     "messageKeys": [
-      "dummy"
+      "ANIMATION_LOOP_DELAY"
     ],
     "resources": {
       "media": [
