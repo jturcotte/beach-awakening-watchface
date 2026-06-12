@@ -26,11 +26,8 @@
 
 #define DATE_ATLAS_DIGIT_COUNT 11
 #define DATE_ATLAS_ALPHA_COUNT 26
-#define DATE_DIGIT_WIDTH (8 * DATE_ATLAS_SCALE)
 #define DATE_DIGIT_HEIGHT (8 * DATE_ATLAS_SCALE)
-#define DATE_ALPHA_WIDTH (9 * DATE_ATLAS_SCALE)
 #define DATE_ALPHA_HEIGHT (10 * DATE_ATLAS_SCALE)
-#define DATE_ALPHA_STRIDE (8 * DATE_ATLAS_SCALE)
 #define DATE_DIGIT_ROW_Y 0
 #define DATE_UPPER_ROW_Y (8 * DATE_ATLAS_SCALE)
 #define DATE_LOWER_ROW_Y (17 * DATE_ATLAS_SCALE)
@@ -68,6 +65,31 @@ static GBitmap *s_letter_lower_sub[DATE_ATLAS_ALPHA_COUNT];
 static const int16_t s_digit_x[DIGIT_COUNT] = { 0, 42, 72, 114, 156, 198, 240, 282, 324, 366, 408 };
 static const uint8_t s_digit_w[DIGIT_COUNT] = { 40, 28, 40, 40, 40, 40, 40, 40, 40, 40, 16 };
 
+static const int16_t s_letter_digit_x[DATE_ATLAS_DIGIT_COUNT] = {
+  0, 20, 32, 48, 64, 80, 96, 114, 128, 146, 160
+};
+static const uint8_t s_letter_digit_w[DATE_ATLAS_DIGIT_COUNT] = {
+  14, 10, 16, 16, 16, 16, 14, 14, 16, 14, 16
+};
+
+static const int16_t s_letter_upper_x[DATE_ATLAS_ALPHA_COUNT] = {
+  2, 18, 34, 50, 66, 80, 96, 114, 132, 146, 162, 178, 192,
+  208, 226, 242, 258, 274, 288, 306, 320, 338, 352, 368, 388, 402
+};
+static const uint8_t s_letter_upper_w[DATE_ATLAS_ALPHA_COUNT] = {
+  14, 14, 14, 14, 16, 18, 16, 14, 10, 14, 12, 16, 18,
+  16, 14, 14, 14, 16, 18, 16, 16, 16, 18, 16, 12, 14
+};
+
+static const int16_t s_letter_lower_x[DATE_ATLAS_ALPHA_COUNT] = {
+  0, 18, 34, 48, 64, 82, 98, 112, 130, 144, 162, 178, 194,
+  208, 224, 242, 258, 274, 290, 306, 320, 338, 354, 370, 386, 402
+};
+static const uint8_t s_letter_lower_w[DATE_ATLAS_ALPHA_COUNT] = {
+  14, 10, 16, 16, 14, 12, 16, 12, 12, 12, 10, 10, 16,
+  14, 14, 10, 10, 12, 10, 14, 14, 10, 12, 10, 12, 10
+};
+
 static void prv_format_date_text(const struct tm *time_info, char *buffer, size_t buffer_size) {
   static const char *const s_weekdays[] = {
     "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
@@ -99,8 +121,9 @@ static GBitmap *prv_date_bitmap_for_char(char c, int16_t *width_out,
   }
 
   if(c >= '0' && c <= '9') {
+    const int index = c - '0';
     if(width_out) {
-      *width_out = DATE_DIGIT_WIDTH;
+      *width_out = s_letter_digit_w[index];
     }
     if(height_out) {
       *height_out = DATE_DIGIT_HEIGHT;
@@ -108,12 +131,12 @@ static GBitmap *prv_date_bitmap_for_char(char c, int16_t *width_out,
     if(y_offset_out) {
       *y_offset_out = (DATE_LINE_HEIGHT - DATE_DIGIT_HEIGHT) / 2;
     }
-    return s_letter_digit_sub[c - '0'];
+    return s_letter_digit_sub[index];
   }
 
   if(c == '/') {
     if(width_out) {
-      *width_out = DATE_DIGIT_WIDTH;
+      *width_out = s_letter_digit_w[10];
     }
     if(height_out) {
       *height_out = DATE_DIGIT_HEIGHT;
@@ -125,23 +148,25 @@ static GBitmap *prv_date_bitmap_for_char(char c, int16_t *width_out,
   }
 
   if(c >= 'A' && c <= 'Z') {
+    const int index = c - 'A';
     if(width_out) {
-      *width_out = DATE_ALPHA_WIDTH;
+      *width_out = s_letter_upper_w[index];
     }
     if(height_out) {
       *height_out = DATE_ALPHA_HEIGHT;
     }
-    return s_letter_upper_sub[c - 'A'];
+    return s_letter_upper_sub[index];
   }
 
   if(c >= 'a' && c <= 'z') {
+    const int index = c - 'a';
     if(width_out) {
-      *width_out = DATE_ALPHA_WIDTH;
+      *width_out = s_letter_lower_w[index];
     }
     if(height_out) {
       *height_out = DATE_ALPHA_HEIGHT;
     }
-    return s_letter_lower_sub[c - 'a'];
+    return s_letter_lower_sub[index];
   }
 
   return NULL;
@@ -414,15 +439,17 @@ static void prv_window_load(Window *window) {
   if(s_letters) {
     for(int i = 0; i < DATE_ATLAS_DIGIT_COUNT; i++) {
       s_letter_digit_sub[i] = gbitmap_create_as_sub_bitmap(
-          s_letters, GRect(i * DATE_DIGIT_WIDTH, DATE_DIGIT_ROW_Y, DATE_DIGIT_WIDTH, DATE_DIGIT_HEIGHT));
+          s_letters, GRect(s_letter_digit_x[i], DATE_DIGIT_ROW_Y,
+                           s_letter_digit_w[i], DATE_DIGIT_HEIGHT));
     }
 
     for(int i = 0; i < DATE_ATLAS_ALPHA_COUNT; i++) {
-      const int16_t x = (int16_t)(i * DATE_ALPHA_STRIDE);
       s_letter_upper_sub[i] = gbitmap_create_as_sub_bitmap(
-          s_letters, GRect(x, DATE_UPPER_ROW_Y, DATE_ALPHA_WIDTH, DATE_ALPHA_HEIGHT));
+          s_letters, GRect(s_letter_upper_x[i], DATE_UPPER_ROW_Y,
+                           s_letter_upper_w[i], DATE_ALPHA_HEIGHT));
       s_letter_lower_sub[i] = gbitmap_create_as_sub_bitmap(
-          s_letters, GRect(x, DATE_LOWER_ROW_Y, DATE_ALPHA_WIDTH, DATE_ALPHA_HEIGHT));
+          s_letters, GRect(s_letter_lower_x[i], DATE_LOWER_ROW_Y,
+                           s_letter_lower_w[i], DATE_ALPHA_HEIGHT));
     }
   } else {
     APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to load letters.png");
