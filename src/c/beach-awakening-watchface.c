@@ -54,6 +54,7 @@ static bool s_player_ready;
 static uint32_t s_loop_pause_duration = LOOP_PAUSE_DURATION_DEFAULT;
 static bool s_waiting_for_tick_loop;
 static uint32_t s_waiting_for_tick_delay_ms;
+static bool s_show_date = true;
 
 static GBitmap *s_digits;
 static GBitmap *s_digit_sub[DIGIT_COUNT];
@@ -249,23 +250,40 @@ static void prv_set_loop_pause_duration(uint32_t duration_ms) {
 
 static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
   Tuple *loop_pause = dict_find(iter, MESSAGE_KEY_ANIMATION_LOOP_DELAY);
-  if(!loop_pause) {
-    return;
+  if(loop_pause) {
+    uint32_t duration_ms = LOOP_PAUSE_DURATION_DEFAULT;
+    switch(loop_pause->type) {
+      case TUPLE_INT:
+        duration_ms = prv_loop_pause_duration_from_int(loop_pause->value->int32);
+        break;
+      case TUPLE_UINT:
+        duration_ms = prv_loop_pause_duration_from_int((int32_t)loop_pause->value->uint32);
+        break;
+      default:
+        break;
+    }
+    prv_set_loop_pause_duration(duration_ms);
   }
 
-  uint32_t duration_ms = LOOP_PAUSE_DURATION_DEFAULT;
-  switch(loop_pause->type) {
-    case TUPLE_INT:
-      duration_ms = prv_loop_pause_duration_from_int(loop_pause->value->int32);
-      break;
-    case TUPLE_UINT:
-      duration_ms = prv_loop_pause_duration_from_int((int32_t)loop_pause->value->uint32);
-      break;
-    default:
-      return;
+  Tuple *show_date = dict_find(iter, MESSAGE_KEY_SHOW_DATE);
+  if(show_date) {
+    bool enabled = false;
+    switch(show_date->type) {
+      case TUPLE_INT:
+        enabled = show_date->value->int32 != 0;
+        break;
+      case TUPLE_UINT:
+        enabled = show_date->value->uint32 != 0;
+        break;
+      default:
+        break;
+    }
+    s_show_date = enabled;
+    persist_write_bool(MESSAGE_KEY_SHOW_DATE, enabled);
+    if(s_canvas_layer) {
+      layer_mark_dirty(s_canvas_layer);
+    }
   }
-
-  prv_set_loop_pause_duration(duration_ms);
 }
 
 static void prv_schedule_next_frame(void);
@@ -334,9 +352,11 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
 
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
-  char date_text[16];
-  prv_format_date_text(t, date_text, sizeof(date_text));
-  prv_draw_date_text(ctx, time_right, y, date_text);
+  if(s_show_date) {
+    char date_text[16];
+    prv_format_date_text(t, date_text, sizeof(date_text));
+    prv_draw_date_text(ctx, time_right, y, date_text);
+  }
 
   if(has_h_tens) {
     graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
@@ -523,6 +543,10 @@ static void prv_init(void) {
   if(persist_exists(MESSAGE_KEY_ANIMATION_LOOP_DELAY)) {
     s_loop_pause_duration = prv_loop_pause_duration_from_int(
         persist_read_int(MESSAGE_KEY_ANIMATION_LOOP_DELAY));
+  }
+
+  if(persist_exists(MESSAGE_KEY_SHOW_DATE)) {
+    s_show_date = persist_read_bool(MESSAGE_KEY_SHOW_DATE);
   }
 
   s_window = window_create();

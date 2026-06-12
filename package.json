@@ -34,7 +34,8 @@
       "watchface": true
     },
     "messageKeys": [
-      "ANIMATION_LOOP_DELAY"
+      "ANIMATION_LOOP_DELAY",
+      "SHOW_DATE"
     ],
     "resources": {
       "media": [

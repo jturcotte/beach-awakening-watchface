@@ -40,6 +40,12 @@ module.exports = [
         ]
       },
       {
+        type: 'toggle',
+        messageKey: 'SHOW_DATE',
+        label: 'Show date',
+        defaultValue: true
+      },
+      {
         type: 'submit',
         defaultValue: 'Save'
       }
