@@ -47,6 +47,11 @@
           "type": "bitmap",
           "name": "DIGITS",
           "file": "digits.png"
+        },
+        {
+          "type": "bitmap",
+          "name": "LETTERS",
+          "file": "letters.png"
         }
       ]
     }
