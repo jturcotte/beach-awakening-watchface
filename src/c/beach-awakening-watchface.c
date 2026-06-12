@@ -293,10 +293,33 @@ static void prv_schedule_frame_after_delay(uint32_t ms) {
   s_timer = app_timer_register(ms, prv_timer_cb, NULL);
 }
 
+static void update_face(void) {
+  time_t now = time(NULL);
+  struct tm *t = localtime(&now);
+  if (t) {
+    // Update the sprites tile_id and h_flip flag to show Marin looking left
+    if ((t->tm_min == 11 && (t->tm_hour == 1 || t->tm_hour == 11))
+        || (t->tm_min == 22 && t->tm_hour == 2)
+        || (t->tm_min == 11 && t->tm_hour == 13 && !clock_is_24h_style())
+        || (t->tm_min == 22 && t->tm_hour == 14 && !clock_is_24h_style())
+        || (t->tm_min == 22 && t->tm_hour == 22 && clock_is_24h_style())) {
+      s_player.oam[12][2] = 70;
+      s_player.oam[13][2] = 72;
+      s_player.oam[13][3] = 0x01;
+    } else {
+      s_player.oam[12][2] = 64;
+      s_player.oam[13][2] = 64;
+      s_player.oam[13][3] = 0x21;
+    }
+  }
+}
+
 static void prv_tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   if(s_canvas_layer) {
     layer_mark_dirty(s_canvas_layer);
   }
+
+  update_face();
 
   if(!s_waiting_for_tick_loop) {
     return;
