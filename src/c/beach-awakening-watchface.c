@@ -468,6 +468,17 @@ static void prv_window_load(Window *window) {
   const ResHandle res = resource_get_handle(RESOURCE_ID_BEACH_PBLV);
   s_player_ready = pblv_player_init(&s_player, res);
 
+  // Hide the 3px of trees seen on the edges of non-round pebbles after loading by copying
+  // tile data from 2 rows inwards to the edge rows.
+#ifndef PBL_ROUND
+  if(s_player_ready) {
+    for (int y = 6; y <= 10; y++) {
+      s_player.map[3 + y * 20] = s_player.map[5 + y * 20];
+      s_player.map[16 + y * 20] = s_player.map[14 + y * 20];
+    }
+  }
+#endif
+
   s_digits = gbitmap_create_with_resource(RESOURCE_ID_DIGITS);
   if(s_digits) {
     const int16_t digits_h = gbitmap_get_bounds(s_digits).size.h;
