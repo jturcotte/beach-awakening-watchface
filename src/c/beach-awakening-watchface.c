@@ -297,12 +297,26 @@ static void update_face(void) {
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
   if (t) {
+    const bool is_24h = clock_is_24h_style();
+    int hour = t->tm_hour;
+    const int minute = t->tm_min;
+
+    if(!is_24h) {
+      hour %= 12;
+      if(hour == 0) {
+        hour = 12;
+      }
+    }
     // Update the sprites tile_id and h_flip flag to show Marin looking left
-    if ((t->tm_min == 11 && (t->tm_hour == 1 || t->tm_hour == 11))
-        || (t->tm_min == 22 && t->tm_hour == 2)
-        || (t->tm_min == 11 && t->tm_hour == 13 && !clock_is_24h_style())
-        || (t->tm_min == 22 && t->tm_hour == 14 && !clock_is_24h_style())
-        || (t->tm_min == 22 && t->tm_hour == 22 && clock_is_24h_style())) {
+    if ((minute == 00 && hour == 0)
+        || (minute == 11 && hour == 11)
+        || (minute == 22 && hour == 22)
+        || (!is_24h &&
+          ((minute == 11 && hour == 1)
+          || (minute == 22 && hour == 2)
+          || (minute == 33 && hour == 3)
+          || (minute == 44 && hour == 4)
+          || (minute == 55 && hour == 5)))) {
       s_player.oam[12][2] = 70;
       s_player.oam[13][2] = 72;
       s_player.oam[13][3] = 0x01;
