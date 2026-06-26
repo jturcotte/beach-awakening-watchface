@@ -1,0 +1,4740 @@
+From 1e2726d33efa1298c5fd9587b8111b17e72d4c53 Mon Sep 17 00:00:00 2001
+From: Jocelyn Turcotte <turcotte.j@gmail.com>
+Date: Fri, 26 Jun 2026 19:50:02 +0200
+Subject: [PATCH] PBLV dumper and editor
+
+---
+ doc/pblv.hexpat                             |  160 +++
+ doc/pebble-pblv-format.md                   |  246 +++++
+ src/feature/video-logger.c                  |  676 +++++++++++-
+ src/platform/qt/CMakeLists.txt              |   26 +-
+ src/platform/qt/pblv/PblvDocument.cpp       | 1070 +++++++++++++++++++
+ src/platform/qt/pblv/PblvDocument.h         |  164 +++
+ src/platform/qt/pblv/PblvMainWindow.cpp     |  207 ++++
+ src/platform/qt/pblv/PblvMainWindow.h       |   39 +
+ src/platform/qt/pblv/PblvMapModel.cpp       |  205 ++++
+ src/platform/qt/pblv/PblvMapModel.h         |   31 +
+ src/platform/qt/pblv/PblvMapWindow.cpp      |  234 ++++
+ src/platform/qt/pblv/PblvMapWindow.h        |   34 +
+ src/platform/qt/pblv/PblvPalettesModel.cpp  |   94 ++
+ src/platform/qt/pblv/PblvPalettesModel.h    |   28 +
+ src/platform/qt/pblv/PblvPalettesWindow.cpp |  247 +++++
+ src/platform/qt/pblv/PblvPalettesWindow.h   |   48 +
+ src/platform/qt/pblv/PblvTileMapWidget.cpp  |  349 ++++++
+ src/platform/qt/pblv/PblvTileMapWidget.h    |   36 +
+ src/platform/qt/pblv/PblvTilesModel.cpp     |  162 +++
+ src/platform/qt/pblv/PblvTilesModel.h       |   34 +
+ src/platform/qt/pblv/PblvTilesWindow.cpp    |  282 +++++
+ src/platform/qt/pblv/PblvTilesWindow.h      |   23 +
+ src/platform/qt/pblv/main.cpp               |   13 +
+ 23 files changed, 4386 insertions(+), 22 deletions(-)
+ create mode 100644 doc/pblv.hexpat
+ create mode 100644 doc/pebble-pblv-format.md
+ create mode 100644 src/platform/qt/pblv/PblvDocument.cpp
+ create mode 100644 src/platform/qt/pblv/PblvDocument.h
+ create mode 100644 src/platform/qt/pblv/PblvMainWindow.cpp
+ create mode 100644 src/platform/qt/pblv/PblvMainWindow.h
+ create mode 100644 src/platform/qt/pblv/PblvMapModel.cpp
+ create mode 100644 src/platform/qt/pblv/PblvMapModel.h
+ create mode 100644 src/platform/qt/pblv/PblvMapWindow.cpp
+ create mode 100644 src/platform/qt/pblv/PblvMapWindow.h
+ create mode 100644 src/platform/qt/pblv/PblvPalettesModel.cpp
+ create mode 100644 src/platform/qt/pblv/PblvPalettesModel.h
+ create mode 100644 src/platform/qt/pblv/PblvPalettesWindow.cpp
+ create mode 100644 src/platform/qt/pblv/PblvPalettesWindow.h
+ create mode 100644 src/platform/qt/pblv/PblvTileMapWidget.cpp
+ create mode 100644 src/platform/qt/pblv/PblvTileMapWidget.h
+ create mode 100644 src/platform/qt/pblv/PblvTilesModel.cpp
+ create mode 100644 src/platform/qt/pblv/PblvTilesModel.h
+ create mode 100644 src/platform/qt/pblv/PblvTilesWindow.cpp
+ create mode 100644 src/platform/qt/pblv/PblvTilesWindow.h
+ create mode 100644 src/platform/qt/pblv/main.cpp
+
+diff --git a/doc/pblv.hexpat b/doc/pblv.hexpat
+new file mode 100644
+index 000000000..9f1d1b871
+--- /dev/null
++++ b/doc/pblv.hexpat
+@@ -0,0 +1,160 @@
++// PBLV (Pebble Video Log) inspector
++// Mirrors doc/pebble-pblv-format.md
++
++import std.core;
++import std.mem;
++import std.ptr;
++import std.bit;
++import std.io;
++
++using u8le  = le u8;
++using u16le = le u16;
++using u32le = le u32;
++
++bitfield PblvFlags {
++    model_cgb  : 1;
++    vram_2bank : 1;
++    padding    : 30;
++};
++
++struct PblvHeader {
++    char  magic[4];       // "PBLV"
++    u16le version;        // 1
++    u16le headerSize;     // 32
++    u32le keyframeOffset; // usually 32
++    u32le framesOffset;   // 0 if no frames emitted
++    u32le nFrames;
++    u16le mapW;           // 20
++    u16le mapH;           // 18
++    PblvFlags flags;
++    u32le reserved;
++};
++
++struct PblvKeyframeMarker {
++    char  tag[4];  // "KEYF"
++    u32le length;  // currently 0
++};
++
++struct PblvKeyframeParams {
++    u8le model;          // 1=CGB, 0=DMG
++    u8le lcdc;
++    u8le scx;
++    u8le scy;
++    u8le bgMapSelect;    // LCDC bit3
++    u8le tileDataSelect; // LCDC bit4
++    u8le reserved0;
++    u8le reserved1;
++};
++
++struct PblvMapCell {
++    u16le tileKey;   // bits0..14 tileIndex, bit15 bank
++    u8le  palette;   // 0..7
++    u8le  reserved;
++};
++
++bitfield PblvOamAttr {
++    cgbPalette : 3; // CGB: 0..7
++    cgbBank    : 1; // CGB: VRAM bank
++    dmgPalette : 1; // DMG: 0/1
++    xFlip      : 1;
++    yFlip      : 1;
++    priority   : 1; // OBJ behind BG
++};
++
++struct PblvOamEntry {
++    u8le y;      // Y position + 16
++    u8le x;      // X position + 8
++    u8le tile;   // tile index (8x8); for 8x16 use tile & 0xFE
++    PblvOamAttr attr;
++} [[format("oam_entry_format")]];
++
++fn oam_entry_format(PblvOamEntry entry) {
++    s32 x = entry.x - 8;
++    s32 y = entry.y - 16;
++    return std::format("x={} y={}", x, y);
++};
++
++struct PblvTile {
++    u8le pixels[64];
++};
++
++struct PblvTileBank<auto TileCount> {
++    PblvTile tiles[TileCount];
++};
++
++struct PblvKeyframe {
++    PblvKeyframeMarker marker;
++
++    PblvKeyframeParams params;
++
++    u16le tileCount;     // 384
++    u16le bankCount;     // 2 for CGB, else 1
++    u16le mapW;          // 20
++    u16le mapH;          // 18
++    u16le reserved0;
++    u16le reserved1;
++
++    u16le nPaletteBytes; // 32
++    u8le  paletteBytes[nPaletteBytes];
++
++    // Tile bitmap table: bankCount * tileCount tiles, 64 bytes each (16x16)
++    PblvTileBank<tileCount> banks[bankCount];
++
++    // Visible BG map: mapW*mapH cells
++    PblvMapCell map[mapW * mapH];
++
++    // OBJ palettes (GColor8)
++    u16le nObjPaletteBytes; // 32
++    u8le  objPaletteBytes[nObjPaletteBytes];
++
++    // OAM (sprites): 40 * 4 bytes
++    u16le oamBytes; // 160
++    PblvOamEntry oamData[oamBytes / 4];
++};
++
++struct PblvPalUpdate {
++    u8le palette;
++    u8le color;
++    u8le gcolor;    // Pebble GColor8
++    u8le reserved;
++};
++
++struct PblvTileUpdate {
++    u16le tileKey;
++    u16le reserved;
++    u8le  data[64];
++};
++
++struct PblvMapUpdate {
++    u16le mapIndex; // x + y*20
++    u16le tileKey;
++    u8le  palette;
++    u8le  reserved;
++};
++
++struct PblvOamUpdate {
++    u16le index;   // sprite index 0..39
++    u16le reserved;
++    PblvOamEntry data;
++};
++
++struct PblvFrame {
++    u16le deltaFrames;
++    u16le nPalUpdates;
++    u16le nTileUpdates;
++    u16le nMapUpdates;
++    u16le nObjPalUpdates;
++    u16le nOamUpdates;
++
++    PblvPalUpdate palUpdates[nPalUpdates];
++    PblvTileUpdate tileUpdates[nTileUpdates];
++    PblvMapUpdate mapUpdates[nMapUpdates];
++    PblvPalUpdate objPalUpdates[nObjPalUpdates];
++    PblvOamUpdate oamUpdates[nOamUpdates];
++};
++
++PblvHeader header @ 0x00;
++
++// Keyframe always comes first; offset is kept in header for robustness.
++PblvKeyframe keyframe @ header.keyframeOffset;
++PblvFrame frames[while(!std::mem::eof())] @ header.framesOffset;
+diff --git a/doc/pebble-pblv-format.md b/doc/pebble-pblv-format.md
+new file mode 100644
+index 000000000..8fca72a78
+--- /dev/null
++++ b/doc/pebble-pblv-format.md
+@@ -0,0 +1,246 @@
++# PBLV (Pebble Video Log) binary format
++
++This repo contains a **local-only** modification that replaces mGBA’s legacy `mVL` video-log output with a Pebble-friendly format called **PBLV**.
++
++Goal: export Game Boy / Game Boy Color background animations that can be consumed by a simple state machine in a Pebble watchface.
++
++- Intended consumer: a Pebble app that maintains:
++  - a tile bitmap table (16x16 tiles, 2bpp)
++  - a per-tile palette selection
++  - a 20x18 “visible background map” grid
++- Sprites (OBJ) are included.
++
++All integer fields are **little-endian**.
++
++## Concepts
++
++### Tile pixels (Pebble `GBitmapFormat2BitPalette`)
++
++PBLV stores tiles as Pebble-packed 2bpp pixels.
++
++- Each tile is **16x16** pixels and stored as **64 bytes**: 4 bytes per row, 16 rows.
++- Exporter behavior: tiles are pixel-doubled at dump time (each original 8x8 pixel becomes a 2x2 block).
++
++- Pixels are stored left-to-right.
++- For each row, 8 pixels are packed into 2 bytes.
++- Each byte holds 4 pixels:
++
++```
++byte = (p0 << 6) | (p1 << 4) | (p2 << 2) | p3
++```
++
++where each `pN` is a 2-bit palette index (0..3).
++
++### Colors (`GColor8`)
++Palette colors are stored as Pebble `GColor8` bytes (`0bAARRGGBB`, 2 bits per channel).
++
++- Alpha is always written as `3` (opaque).
++- Conversion used by the exporter is:
++  - interpret GB CGB palette entries as **BGR555** (`0bbbbbgggggrrrrr`)
++  - convert 5-bit channels to 2-bit by rounding
++
++## File layout
++
++### Header (fixed 32 bytes)
++
++| Offset | Size | Name | Description |
++|---:|---:|---|---|
++| 0x00 | 4 | magic | ASCII `PBLV` |
++| 0x04 | 2 | version | `1` |
++| 0x06 | 2 | headerSize | `32` |
++| 0x08 | 4 | keyframeOffset | Offset of keyframe (currently always `32`) |
++| 0x0C | 4 | framesOffset | Offset of first frame record (0 if no frames emitted) |
++| 0x10 | 4 | nFrames | Number of emitted frames |
++| 0x14 | 2 | mapW | Visible map width in tiles (currently `20`) |
++| 0x16 | 2 | mapH | Visible map height in tiles (currently `18`) |
++| 0x18 | 4 | flags | See below |
++| 0x1C | 4 | reserved | 0 |
++
++**flags** bits:
++- bit 0: `MODEL_CGB` (1 if GBC)
++- bit 1: `VRAM_2BANK` (1 if GBC)
++
++### Keyframe
++The keyframe is written immediately after the header.
++
++#### Keyframe marker
++
++| Field | Size | Value |
++|---|---:|---|
++| tag | 4 | ASCII `KEYF` |
++| length | 4 | reserved, currently `0` |
++
++#### Keyframe parameters
++8 bytes:
++
++| Byte | Name | Description |
++|---:|---|---|
++| 0 | model | `1` for CGB, `0` otherwise |
++| 1 | lcdc | Raw LCDC register at capture start |
++| 2 | scx | Raw SCX register at capture start |
++| 3 | scy | Raw SCY register at capture start |
++| 4 | bgMapSelect | `1` if LCDC bit3 selects $9C00, else `0` ($9800) |
++| 5 | tileDataSelect | `1` if LCDC bit4 selects $8000 unsigned tiles, else `0` ($8800 signed) |
++| 6..7 | reserved | 0 |
++
++Then:
++
++| Field | Size | Description |
++|---|---:|---|
++| tileCount | 2 | currently `384` |
++| bankCount | 2 | `2` for CGB, else `1` |
++| mapW | 2 | currently `20` |
++| mapH | 2 | currently `18` |
++| reserved0 | 2 | 0 |
++| reserved1 | 2 | 0 |
++
++#### BG palettes
++
++| Field | Size | Description |
++|---|---:|---|
++| nPaletteBytes | 2 | currently `32` |
++| paletteBytes | 32 | `GColor8` bytes for BG palettes (8 palettes × 4 colors) |
++
++Palette entry index is:
++
++```
++index = paletteId * 4 + colorId
++paletteId in 0..7
++colorId in 0..3
++```
++
++#### Tile bitmap table
++Immediately after palettes:
++
++- `bankCount` banks
++- each bank contains `tileCount` tiles
++- each tile is 64 bytes of Pebble-packed 2bpp pixels (16x16)
++
++Layout:
++
++```
++for bank in 0..bankCount-1:
++  for tileIndex in 0..tileCount-1:
++    uint8 tilePixels[64]
++```
++
++#### Visible BG map (20x18)
++Finally, the visible map grid (row-major):
++
++For each cell, 4 bytes:
++
++| Field | Size | Description |
++|---|---:|---|
++| tileKey | 2 | tile index + bank bit |
++| palette | 1 | palette index 0..7 |
++| reserved | 1 | 0 |
++
++`tileKey`:
++- bits 0..14: tileIndex (0..383)
++- bit 15: VRAM bank (0 = bank0, 1 = bank1)
++
++#### OBJ palettes
++Immediately after the visible BG map:
++
++| Field | Size | Description |
++|---|---:|---|
++| nObjPaletteBytes | 2 | currently `32` |
++| paletteBytes | 32 | `GColor8` bytes for OBJ palettes (8 palettes × 4 colors) |
++
++Palette entry index is:
++
++```
++index = paletteId * 4 + colorId
++paletteId in 0..7
++colorId in 0..3
++```
++
++#### OAM (sprites)
++Immediately after OBJ palettes:
++
++| Field | Size | Description |
++|---|---:|---|
++| oamBytes | 2 | currently `160` |
++| oamData | 160 | raw GB OAM bytes (40 sprites × 4 bytes) |
++
++Each sprite entry is 4 bytes in standard GB order:
++
++| Byte | Name | Description |
++|---:|---|---|
++| 0 | y | Y position + 16 |
++| 1 | x | X position + 8 |
++| 2 | tile | tile index (8x8); for 8x16 use `tile & 0xFE` |
++| 3 | attr | palette/bank/flip/priority attributes |
++
++## Frames
++Frames are written sequentially, starting at `framesOffset`.
++
++A frame represents a set of updates that become visible after `deltaFrames` video frames.
++
++### Frame header (12 bytes)
++
++| Field | Size | Description |
++|---|---:|---|
++| deltaFrames | 2 | number of GB frames since previous emitted frame |
++| nPalUpdates | 2 | number of palette updates |
++| nTileUpdates | 2 | number of tile updates |
++| nMapUpdates | 2 | number of visible-map updates |
++| nObjPalUpdates | 2 | number of OBJ palette updates |
++| nOamUpdates | 2 | number of OAM (sprite) updates |
++
++### Palette updates
++`nPalUpdates` records, 4 bytes each:
++
++| Field | Size | Description |
++|---|---:|---|
++| palette | 1 | paletteId (0..7) |
++| color | 1 | colorId (0..3) |
++| gcolor | 1 | `GColor8` |
++| reserved | 1 | 0 |
++
++### Tile updates
++`nTileUpdates` records:
++
++- 68 bytes each
++
++| Field | Size | Description |
++|---|---:|---|
++| tileKey | 2 | tile index + bank bit (same encoding as keyframe) |
++| reserved | 2 | 0 |
++| data | 64 | Pebble-packed 2bpp tile pixels (16x16) |
++
++### Map updates
++`nMapUpdates` records, 6 bytes each:
++
++| Field | Size | Description |
++|---|---:|---|
++| mapIndex | 2 | index into 20x18 map, `x + y*20` |
++| tileKey | 2 | new tileKey |
++| palette | 1 | new palette index |
++| reserved | 1 | 0 |
++
++### OBJ palette updates
++`nObjPalUpdates` records, 4 bytes each (same layout as BG palette updates):
++
++| Field | Size | Description |
++|---|---:|---|
++| palette | 1 | paletteId (0..7) |
++| color | 1 | colorId (0..3) |
++| gcolor | 1 | `GColor8` |
++| reserved | 1 | 0 |
++
++### OAM updates
++`nOamUpdates` records, 8 bytes each:
++
++| Field | Size | Description |
++|---|---:|---|
++| index | 2 | sprite index (0..39) |
++| reserved | 2 | 0 |
++| data | 4 | raw OAM bytes for that sprite |
++
++## Notes / limitations (current exporter)
++
++- Only BG (visible 20x18) is exported for the background; sprites are exported separately.
++- View is assumed static: SCX/SCY/LCDC changes after start are ignored.
++- Only BG palettes are exported; OBJ palettes are ignored.
++- Frames are only emitted when there were updates; otherwise time is accumulated into `deltaFrames`.
+diff --git a/src/feature/video-logger.c b/src/feature/video-logger.c
+index ae2fa046e..e1a4a851b 100644
+--- a/src/feature/video-logger.c
++++ b/src/feature/video-logger.c
+@@ -5,9 +5,9 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ #include <mgba/feature/video-logger.h>
+ 
++#include <mgba-util/math.h>
+ #include <mgba-util/memory.h>
+ #include <mgba-util/vfs.h>
+-#include <mgba-util/math.h>
+ 
+ #ifdef M_CORE_GBA
+ #include <mgba/gba/core.h>
+@@ -16,6 +16,12 @@
+ #include <mgba/gb/core.h>
+ #endif
+ 
++#ifdef M_CORE_GB
++#include <mgba/internal/gb/gb.h>
++#include <mgba/internal/gb/io.h>
++#include <mgba/internal/gb/memory.h>
++#endif
++
+ #ifdef USE_ZLIB
+ #include <zlib.h>
+ #endif
+@@ -46,9 +52,7 @@ enum mVLBlockType {
+ 	mVL_BLOCK_FOOTER = 0x784C566D
+ };
+ 
+-enum mVLHeaderFlag {
+-	mVL_FLAG_HAS_INITIAL_STATE = 1
+-};
++enum mVLHeaderFlag { mVL_FLAG_HAS_INITIAL_STATE = 1 };
+ 
+ struct mVLBlockHeader {
+ 	uint32_t blockType;
+@@ -57,9 +61,7 @@ struct mVLBlockHeader {
+ 	uint32_t flags;
+ };
+ 
+-enum mVLBlockFlag {
+-	mVL_FLAG_BLOCK_COMPRESSED = 1
+-};
++enum mVLBlockFlag { mVL_FLAG_BLOCK_COMPRESSED = 1 };
+ 
+ struct mVideoLogHeader {
+ 	char magic[4];
+@@ -96,6 +98,12 @@ struct mVideoLogContext {
+ 	size_t initialStateSize;
+ 	uint32_t nChannels;
+ 	struct mVideoLogChannel channels[mVL_MAX_CHANNELS];
++	struct mCore* core;
++
++	// Private, non-stable on-disk exporter used for a local Pebble workflow.
++	// When enabled, we do not write the legacy mVL container.
++	bool pebbleExport;
++	void* pebbleState;
+ 
+ 	bool write;
+ 	bool compression;
+@@ -103,6 +111,612 @@ struct mVideoLogContext {
+ 	struct VFile* backing;
+ };
+ 
++// --- Pebble export (GB-only) -------------------------------------------------
++
++// On-disk format magic for the Pebble-focused export.
++static const char _PBLV_MAGIC[] = "PBLV";
++
++enum {
++	PBLV_VERSION = 1,
++};
++
++enum {
++	PBLV_FLAG_MODEL_CGB = 1 << 0,
++	PBLV_FLAG_VRAM_2BANK = 1 << 1,
++};
++
++enum {
++	PBLV_MAP_W = 20,
++	PBLV_MAP_H = 18,
++	PBLV_TILE_COUNT = 384,
++	PBLV_TILE_W = 16,
++	PBLV_TILE_H = 16,
++	PBLV_TILE_BYTES = (PBLV_TILE_W * PBLV_TILE_H) / 4,
++};
++
++enum _PblvlParseState {
++	PBLVL_NEED_PACKET = 0,
++	PBLVL_NEED_PAYLOAD,
++};
++
++struct _PblvlPalUpdate {
++	uint8_t palette;
++	uint8_t color;
++	uint8_t gcolor;
++	uint8_t reserved;
++};
++
++struct _PblvlTileUpdate {
++	uint16_t tileKey;
++	uint16_t reserved;
++	uint8_t data[PBLV_TILE_BYTES];
++};
++
++struct _PblvlOamUpdate {
++	uint16_t index;
++	uint16_t reserved;
++	uint8_t data[4];
++};
++
++struct _PblvlMapUpdate {
++	uint16_t mapIndex;
++	uint16_t tileKey;
++	uint8_t palette;
++	uint8_t reserved;
++};
++
++struct _PblvlWriter {
++	struct VFile* vf;
++	bool headerWritten;
++	uint32_t framesOffset;
++	uint32_t nFrames;
++	uint32_t pendingFrameDelta;
++
++	uint8_t lcdc;
++	uint8_t scx;
++	uint8_t scy;
++	bool isCgb;
++
++	uint8_t* vram; // GB_SIZE_VRAM bytes
++	uint16_t palette555[64];
++	uint8_t paletteGColor[32]; // BG palettes only (8*4)
++	uint8_t objPaletteGColor[32]; // OBJ palettes (8*4)
++	uint8_t oam[GB_SIZE_OAM];
++	uint8_t oamPacked[GB_SIZE_OAM];
++
++	uint8_t tilePacked[2][PBLV_TILE_COUNT][PBLV_TILE_BYTES];
++	uint16_t mapTileKey[PBLV_MAP_W * PBLV_MAP_H];
++	uint8_t mapPalette[PBLV_MAP_W * PBLV_MAP_H];
++
++	bool mapDirty;
++	uint8_t tileDirty[2][PBLV_TILE_COUNT];
++	uint8_t oamDirty[GB_VIDEO_MAX_OBJ];
++
++	struct _PblvlPalUpdate* palUpdates;
++	size_t palCount;
++	size_t palCap;
++	struct _PblvlPalUpdate* objPalUpdates;
++	size_t objPalCount;
++	size_t objPalCap;
++	struct _PblvlTileUpdate* tileUpdates;
++	size_t tileCount;
++	size_t tileCap;
++	struct _PblvlMapUpdate* mapUpdates;
++	size_t mapCount;
++	size_t mapCap;
++	struct _PblvlOamUpdate* oamUpdates;
++	size_t oamCount;
++	size_t oamCap;
++
++	enum _PblvlParseState parseState;
++	uint8_t packetBuf[sizeof(struct mVideoLoggerDirtyInfo)];
++	size_t packetHave;
++	struct mVideoLoggerDirtyInfo currentPacket;
++	uint32_t payloadAddr;
++	uint32_t payloadLength;
++	uint32_t payloadHave;
++};
++
++static uint8_t _pblvlColorFrom555(uint16_t bgr555) {
++	uint8_t r5 = bgr555 & 0x1F;
++	uint8_t g5 = (bgr555 >> 5) & 0x1F;
++	uint8_t b5 = (bgr555 >> 10) & 0x1F;
++	uint8_t r2 = (uint8_t) ((r5 * 3 + 15) / 31);
++	uint8_t g2 = (uint8_t) ((g5 * 3 + 15) / 31);
++	uint8_t b2 = (uint8_t) ((b5 * 3 + 15) / 31);
++	return (uint8_t) ((3 << 6) | (r2 << 4) | (g2 << 2) | b2);
++}
++
++static void _pblvlTileToPebble2bpp16x16PixelDoubled(const uint8_t* gbTile16, uint8_t outTile[PBLV_TILE_BYTES]) {
++	// GB tile: 8x8, planar 2bpp, 16 bytes.
++	// Output: 16x16, Pebble-packed 2bpp, 64 bytes.
++	int y;
++	for (y = 0; y < 8; ++y) {
++		uint8_t lo = gbTile16[y * 2];
++		uint8_t hi = gbTile16[y * 2 + 1];
++		uint8_t srcPx[8];
++		int x;
++		for (x = 0; x < 8; ++x) {
++			int bit = 7 - x;
++			srcPx[x] = (uint8_t) ((((hi >> bit) & 1) << 1) | ((lo >> bit) & 1));
++		}
++
++		// Duplicate row vertically (2x)
++		int dy;
++		for (dy = 0; dy < 2; ++dy) {
++			int outY = y * 2 + dy;
++			uint8_t rowPx[16];
++			for (x = 0; x < 8; ++x) {
++				rowPx[x * 2 + 0] = srcPx[x];
++				rowPx[x * 2 + 1] = srcPx[x];
++			}
++
++			// Pack 16 pixels -> 4 bytes
++			int bx;
++			for (bx = 0; bx < 4; ++bx) {
++				uint8_t p0 = rowPx[bx * 4 + 0] & 3;
++				uint8_t p1 = rowPx[bx * 4 + 1] & 3;
++				uint8_t p2 = rowPx[bx * 4 + 2] & 3;
++				uint8_t p3 = rowPx[bx * 4 + 3] & 3;
++				outTile[outY * 4 + bx] = (uint8_t) ((p0 << 6) | (p1 << 4) | (p2 << 2) | p3);
++			}
++		}
++	}
++}
++
++static inline void _pblvlWriteU16(struct VFile* vf, uint16_t v) {
++	uint8_t b[2];
++	STORE_16LE(v, 0, b);
++	vf->write(vf, b, sizeof(b));
++}
++
++static inline void _pblvlWriteU32(struct VFile* vf, uint32_t v) {
++	uint8_t b[4];
++	STORE_32LE(v, 0, b);
++	vf->write(vf, b, sizeof(b));
++}
++
++static void _pblvlVecEnsure(void** ptr, size_t* cap, size_t elemSize, size_t want) {
++	if (*cap >= want) {
++		return;
++	}
++	size_t newCap = *cap ? *cap : 16;
++	while (newCap < want) {
++		newCap <<= 1;
++	}
++	*ptr = realloc(*ptr, newCap * elemSize);
++	*cap = newCap;
++}
++
++static void _pblvlRecomputeVisibleMap(struct _PblvlWriter* w) {
++	uint16_t mapBase = (w->lcdc & 0x08) ? 0x1C00 : 0x1800;
++	bool tileDataUnsigned = !!(w->lcdc & 0x10);
++	int tileX0 = w->scx >> 3;
++	int tileY0 = w->scy >> 3;
++	int y;
++	for (y = 0; y < PBLV_MAP_H; ++y) {
++		int x;
++		for (x = 0; x < PBLV_MAP_W; ++x) {
++			int topX = (tileX0 + x) & 0x1F;
++			int topY = (tileY0 + y) & 0x1F;
++			uint16_t mapIndex = (uint16_t) (topX + topY * 0x20);
++			uint8_t tileByte = w->vram[mapBase + mapIndex];
++			uint8_t attrByte = 0;
++			if (w->isCgb) {
++				attrByte = w->vram[GB_SIZE_VRAM_BANK0 + mapBase + mapIndex];
++			}
++			uint8_t palette = w->isCgb ? (attrByte & 0x07) : 0;
++			uint16_t tileIndex;
++			if (tileDataUnsigned) {
++				tileIndex = tileByte;
++			} else {
++				tileIndex = (uint16_t) (256 + (int8_t) tileByte);
++			}
++			if (tileIndex >= PBLV_TILE_COUNT) {
++				tileIndex %= PBLV_TILE_COUNT;
++			}
++			uint16_t tileKey = tileIndex;
++			if (w->isCgb && (attrByte & 0x08)) {
++				tileKey |= 0x8000;
++			}
++			uint16_t visibleIndex = (uint16_t) (x + y * PBLV_MAP_W);
++			w->mapTileKey[visibleIndex] = tileKey;
++			w->mapPalette[visibleIndex] = palette;
++		}
++	}
++}
++
++static void _pblvlWriteHeaderAndKeyframe(struct _PblvlWriter* w) {
++	if (w->headerWritten) {
++		return;
++	}
++	w->vf->seek(w->vf, 0, SEEK_SET);
++
++	// Fixed 32-byte header
++	w->vf->write(w->vf, _PBLV_MAGIC, 4);
++	_pblvlWriteU16(w->vf, (uint16_t) PBLV_VERSION);
++	_pblvlWriteU16(w->vf, 32);
++	_pblvlWriteU32(w->vf, 32); // keyframeOffset
++	_pblvlWriteU32(w->vf, 0); // framesOffset (patched later)
++	_pblvlWriteU32(w->vf, 0); // nFrames (patched later)
++	_pblvlWriteU16(w->vf, PBLV_MAP_W);
++	_pblvlWriteU16(w->vf, PBLV_MAP_H);
++	uint32_t flags = 0;
++	if (w->isCgb) {
++		flags |= PBLV_FLAG_MODEL_CGB;
++		flags |= PBLV_FLAG_VRAM_2BANK;
++	}
++	_pblvlWriteU32(w->vf, flags);
++	_pblvlWriteU32(w->vf, 0);
++
++	// Keyframe body
++	w->vf->write(w->vf, "KEYF", 4);
++	_pblvlWriteU32(w->vf, 0); // length (unused, reserved)
++	uint8_t params[8] = { 0 };
++	params[0] = w->isCgb ? 1 : 0;
++	params[1] = w->lcdc;
++	params[2] = w->scx;
++	params[3] = w->scy;
++	params[4] = (w->lcdc & 0x08) ? 1 : 0;
++	params[5] = (w->lcdc & 0x10) ? 1 : 0;
++	w->vf->write(w->vf, params, sizeof(params));
++	_pblvlWriteU16(w->vf, PBLV_TILE_COUNT);
++	_pblvlWriteU16(w->vf, w->isCgb ? 2 : 1);
++	_pblvlWriteU16(w->vf, PBLV_MAP_W);
++	_pblvlWriteU16(w->vf, PBLV_MAP_H);
++	_pblvlWriteU16(w->vf, 0);
++	_pblvlWriteU16(w->vf, 0);
++
++	// BG palettes: 8 * 4 entries as GColor8
++	_pblvlWriteU16(w->vf, 32);
++	w->vf->write(w->vf, w->paletteGColor, 32);
++
++	// Tile bitmaps
++	uint16_t banks = w->isCgb ? 2 : 1;
++	int bank;
++	for (bank = 0; bank < banks; ++bank) {
++		w->vf->write(w->vf, w->tilePacked[bank], PBLV_TILE_COUNT * PBLV_TILE_BYTES);
++	}
++
++	// Visible BG map
++	uint32_t i;
++	for (i = 0; i < PBLV_MAP_W * PBLV_MAP_H; ++i) {
++		_pblvlWriteU16(w->vf, w->mapTileKey[i]);
++		w->vf->write(w->vf, &w->mapPalette[i], 1);
++		uint8_t z = 0;
++		w->vf->write(w->vf, &z, 1);
++	}
++
++	// OBJ palettes: 8 * 4 entries as GColor8
++	_pblvlWriteU16(w->vf, 32);
++	w->vf->write(w->vf, w->objPaletteGColor, 32);
++
++	// OAM bytes (sprites)
++	_pblvlWriteU16(w->vf, GB_SIZE_OAM);
++	w->vf->write(w->vf, w->oam, GB_SIZE_OAM);
++
++	w->headerWritten = true;
++}
++
++static void _pblvlMarkVRAMDirty(struct _PblvlWriter* w, uint32_t addr, uint32_t len) {
++	uint32_t end = addr + len;
++	// Tile patterns: 0x0000-0x17FF in each bank
++	uint32_t b;
++	for (b = addr; b < end; ++b) {
++		uint32_t bank = b / GB_SIZE_VRAM_BANK0;
++		uint32_t off = b % GB_SIZE_VRAM_BANK0;
++		if (bank > 1) {
++			continue;
++		}
++		if (off < 0x1800) {
++			uint32_t tileIndex = off / 16;
++			if (tileIndex < PBLV_TILE_COUNT) {
++				w->tileDirty[bank][tileIndex] = 1;
++			}
++		} else {
++			// Map region (tilemap + attr map)
++			w->mapDirty = true;
++		}
++	}
++}
++
++static void _pblvlQueuePaletteUpdate(struct _PblvlWriter* w, uint32_t addr, uint16_t value) {
++	uint8_t palette = (uint8_t) (addr / 4);
++	uint8_t color = (uint8_t) (addr % 4);
++	uint8_t gcolor = _pblvlColorFrom555(value);
++	if (addr < 32) {
++		_pblvlVecEnsure((void**) &w->palUpdates, &w->palCap, sizeof(*w->palUpdates), w->palCount + 1);
++		w->palUpdates[w->palCount++] = (struct _PblvlPalUpdate) { palette, color, gcolor, 0 };
++		w->palette555[addr] = value;
++		w->paletteGColor[addr] = gcolor;
++		return;
++	}
++	addr -= 32;
++	palette = (uint8_t) (addr / 4);
++	color = (uint8_t) (addr % 4);
++	_pblvlVecEnsure((void**) &w->objPalUpdates, &w->objPalCap, sizeof(*w->objPalUpdates), w->objPalCount + 1);
++	w->objPalUpdates[w->objPalCount++] = (struct _PblvlPalUpdate) { palette, color, gcolor, 0 };
++	w->palette555[addr + 32] = value;
++	w->objPaletteGColor[addr] = gcolor;
++}
++
++static void _pblvlFinalizeFrame(struct _PblvlWriter* w) {
++	// Called at DIRTY_FRAME.
++	++w->pendingFrameDelta;
++
++	// Materialize tile updates for dirty tiles
++	uint16_t banks = w->isCgb ? 2 : 1;
++	int bank;
++	for (bank = 0; bank < banks; ++bank) {
++		uint32_t ti;
++		for (ti = 0; ti < PBLV_TILE_COUNT; ++ti) {
++			if (!w->tileDirty[bank][ti]) {
++				continue;
++			}
++			w->tileDirty[bank][ti] = 0;
++			uint32_t base = bank * GB_SIZE_VRAM_BANK0 + ti * 16;
++			uint8_t packed[PBLV_TILE_BYTES];
++			_pblvlTileToPebble2bpp16x16PixelDoubled(&w->vram[base], packed);
++			if (!memcmp(w->tilePacked[bank][ti], packed, sizeof(packed))) {
++				continue;
++			}
++			memcpy(w->tilePacked[bank][ti], packed, sizeof(packed));
++			_pblvlVecEnsure((void**) &w->tileUpdates, &w->tileCap, sizeof(*w->tileUpdates), w->tileCount + 1);
++			uint16_t tileKey = (uint16_t) ti;
++			if (bank) {
++				tileKey |= 0x8000;
++			}
++			w->tileUpdates[w->tileCount++] = (struct _PblvlTileUpdate) { tileKey, 0, { 0 } };
++			memcpy(w->tileUpdates[w->tileCount - 1].data, packed, sizeof(packed));
++		}
++	}
++
++	// Materialize map updates if any map region changed
++	if (w->mapDirty) {
++		w->mapDirty = false;
++		uint16_t oldKeys[PBLV_MAP_W * PBLV_MAP_H];
++		uint8_t oldPals[PBLV_MAP_W * PBLV_MAP_H];
++		memcpy(oldKeys, w->mapTileKey, sizeof(oldKeys));
++		memcpy(oldPals, w->mapPalette, sizeof(oldPals));
++		_pblvlRecomputeVisibleMap(w);
++		uint32_t i;
++		for (i = 0; i < PBLV_MAP_W * PBLV_MAP_H; ++i) {
++			if (oldKeys[i] == w->mapTileKey[i] && oldPals[i] == w->mapPalette[i]) {
++				continue;
++			}
++			_pblvlVecEnsure((void**) &w->mapUpdates, &w->mapCap, sizeof(*w->mapUpdates), w->mapCount + 1);
++			w->mapUpdates[w->mapCount++] =
++			    (struct _PblvlMapUpdate) { (uint16_t) i, w->mapTileKey[i], w->mapPalette[i], 0 };
++		}
++	}
++
++	// Materialize OAM updates (sprites)
++	uint32_t si;
++	for (si = 0; si < GB_VIDEO_MAX_OBJ; ++si) {
++		if (!w->oamDirty[si]) {
++			continue;
++		}
++		w->oamDirty[si] = 0;
++		const uint32_t off = si * 4;
++		if (!memcmp(&w->oamPacked[off], &w->oam[off], 4)) {
++			continue;
++		}
++		_pblvlVecEnsure((void**) &w->oamUpdates, &w->oamCap, sizeof(*w->oamUpdates), w->oamCount + 1);
++		w->oamUpdates[w->oamCount++] = (struct _PblvlOamUpdate) { (uint16_t) si, 0, { 0, 0, 0, 0 } };
++		memcpy(w->oamUpdates[w->oamCount - 1].data, &w->oam[off], 4);
++		memcpy(&w->oamPacked[off], &w->oam[off], 4);
++	}
++
++	if (!w->palCount && !w->tileCount && !w->mapCount && !w->objPalCount && !w->oamCount) {
++		return;
++	}
++
++	if (!w->headerWritten) {
++		_pblvlWriteHeaderAndKeyframe(w);
++	}
++
++	// Patch framesOffset on first emitted frame
++	if (!w->framesOffset) {
++		w->framesOffset = (uint32_t) w->vf->seek(w->vf, 0, SEEK_CUR);
++		w->vf->seek(w->vf, 12, SEEK_SET);
++		_pblvlWriteU32(w->vf, w->framesOffset);
++		w->vf->seek(w->vf, w->framesOffset, SEEK_SET);
++	}
++
++	// Frame header
++	_pblvlWriteU16(w->vf, (uint16_t) w->pendingFrameDelta);
++	_pblvlWriteU16(w->vf, (uint16_t) w->palCount);
++	_pblvlWriteU16(w->vf, (uint16_t) w->tileCount);
++	_pblvlWriteU16(w->vf, (uint16_t) w->mapCount);
++	_pblvlWriteU16(w->vf, (uint16_t) w->objPalCount);
++	_pblvlWriteU16(w->vf, (uint16_t) w->oamCount);
++
++	// Payloads
++	if (w->palCount) {
++		w->vf->write(w->vf, w->palUpdates, w->palCount * sizeof(*w->palUpdates));
++	}
++	if (w->tileCount) {
++		w->vf->write(w->vf, w->tileUpdates, w->tileCount * sizeof(*w->tileUpdates));
++	}
++	if (w->mapCount) {
++		w->vf->write(w->vf, w->mapUpdates, w->mapCount * sizeof(*w->mapUpdates));
++	}
++	if (w->objPalCount) {
++		w->vf->write(w->vf, w->objPalUpdates, w->objPalCount * sizeof(*w->objPalUpdates));
++	}
++	if (w->oamCount) {
++		w->vf->write(w->vf, w->oamUpdates, w->oamCount * sizeof(*w->oamUpdates));
++	}
++
++	++w->nFrames;
++	w->pendingFrameDelta = 0;
++	w->palCount = 0;
++	w->tileCount = 0;
++	w->mapCount = 0;
++	w->objPalCount = 0;
++	w->oamCount = 0;
++}
++
++static void _pblvlConsume(struct _PblvlWriter* w, const uint8_t* data, size_t length) {
++	while (length) {
++		if (w->parseState == PBLVL_NEED_PACKET) {
++			size_t need = sizeof(struct mVideoLoggerDirtyInfo) - w->packetHave;
++			size_t take = need;
++			if (take > length) {
++				take = length;
++			}
++			memcpy(&w->packetBuf[w->packetHave], data, take);
++			w->packetHave += take;
++			data += take;
++			length -= take;
++			if (w->packetHave != sizeof(struct mVideoLoggerDirtyInfo)) {
++				continue;
++			}
++			struct mVideoLoggerDirtyInfo raw;
++			memcpy(&raw, w->packetBuf, sizeof(raw));
++			LOAD_32LE(w->currentPacket.type, 0, &raw.type);
++			LOAD_32LE(w->currentPacket.address, 0, &raw.address);
++			LOAD_32LE(w->currentPacket.value, 0, &raw.value);
++			LOAD_32LE(w->currentPacket.value2, 0, &raw.value2);
++			w->packetHave = 0;
++			switch (w->currentPacket.type) {
++			case DIRTY_VRAM:
++				w->payloadAddr = w->currentPacket.address;
++				w->payloadLength = w->currentPacket.value;
++				w->payloadHave = 0;
++				w->parseState = PBLVL_NEED_PAYLOAD;
++				break;
++			case DIRTY_PALETTE:
++				_pblvlQueuePaletteUpdate(w, w->currentPacket.address, (uint16_t) w->currentPacket.value);
++				break;
++			case DIRTY_OAM:
++				if (w->currentPacket.address < GB_SIZE_OAM) {
++					uint32_t addr = w->currentPacket.address;
++					w->oam[addr] = (uint8_t) w->currentPacket.value;
++					uint32_t spriteIndex = addr / 4;
++					if (spriteIndex < GB_VIDEO_MAX_OBJ) {
++						w->oamDirty[spriteIndex] = 1;
++					}
++				}
++				break;
++			case DIRTY_REGISTER:
++				// We intentionally ignore register changes after start; the export assumes a static view.
++				break;
++			case DIRTY_FRAME:
++				_pblvlFinalizeFrame(w);
++				break;
++			default:
++				// Ignore scanlines/ranges/flush/OAM/buffers for now.
++				break;
++			}
++			continue;
++		}
++
++		// NEED_PAYLOAD: currently only VRAM blocks
++		size_t remaining = w->payloadLength - w->payloadHave;
++		size_t take = remaining;
++		if (take > length) {
++			take = length;
++		}
++		if (w->payloadAddr + w->payloadHave + take <= GB_SIZE_VRAM) {
++			memcpy(&w->vram[w->payloadAddr + w->payloadHave], data, take);
++		}
++		w->payloadHave += take;
++		data += take;
++		length -= take;
++		if (w->payloadHave == w->payloadLength) {
++			_pblvlMarkVRAMDirty(w, w->payloadAddr, w->payloadLength);
++			w->parseState = PBLVL_NEED_PACKET;
++		}
++	}
++}
++
++static void _pblvlInitFromCore(struct _PblvlWriter* w, struct mCore* core) {
++	struct GB* gb = (struct GB*) core->board;
++	w->isCgb = gb->model >= GB_MODEL_CGB;
++	w->lcdc = gb->memory.io[GB_REG_LCDC];
++	w->scx = gb->memory.io[GB_REG_SCX];
++	w->scy = gb->memory.io[GB_REG_SCY];
++
++	memcpy(w->vram, gb->video.vram, GB_SIZE_VRAM);
++	memcpy(w->palette555, gb->video.palette, sizeof(w->palette555));
++	uint32_t i;
++	for (i = 0; i < 32; ++i) {
++		w->paletteGColor[i] = _pblvlColorFrom555(w->palette555[i]);
++	}
++	for (i = 0; i < 32; ++i) {
++		w->objPaletteGColor[i] = _pblvlColorFrom555(w->palette555[32 + i]);
++	}
++	memcpy(w->oam, gb->video.oam.obj, GB_SIZE_OAM);
++	memcpy(w->oamPacked, w->oam, GB_SIZE_OAM);
++
++	uint16_t banks = w->isCgb ? 2 : 1;
++	int bank;
++	for (bank = 0; bank < banks; ++bank) {
++		uint32_t ti;
++		for (ti = 0; ti < PBLV_TILE_COUNT; ++ti) {
++			uint32_t base = bank * GB_SIZE_VRAM_BANK0 + ti * 16;
++			_pblvlTileToPebble2bpp16x16PixelDoubled(&w->vram[base], w->tilePacked[bank][ti]);
++		}
++	}
++
++	_pblvlRecomputeVisibleMap(w);
++	memset(w->tileDirty, 0, sizeof(w->tileDirty));
++	w->mapDirty = false;
++	memset(w->oamDirty, 0, sizeof(w->oamDirty));
++	w->palCount = w->tileCount = w->mapCount = 0;
++	w->objPalCount = w->oamCount = 0;
++	w->pendingFrameDelta = 0;
++	w->parseState = PBLVL_NEED_PACKET;
++	w->packetHave = 0;
++}
++
++static void _pblvlEnable(struct mVideoLogContext* context) {
++	if (context->pebbleExport || !context->write || !context->core || !context->backing) {
++		return;
++	}
++	if (context->core->platform(context->core) != mPLATFORM_GB) {
++		return;
++	}
++	struct _PblvlWriter* w = calloc(1, sizeof(*w));
++	w->vf = context->backing;
++	w->vram = malloc(GB_SIZE_VRAM);
++	context->pebbleExport = true;
++	context->pebbleState = w;
++	_pblvlInitFromCore(w, context->core);
++	// Clear any pre-output buffered packets; the export keyframe anchors here.
++	size_t i;
++	for (i = 0; i < context->nChannels; ++i) {
++		CircleBufferClear(&context->channels[i].buffer);
++		CircleBufferClear(&context->channels[i].injectedBuffer);
++	}
++	context->backing->truncate(context->backing, 0);
++	context->backing->seek(context->backing, 0, SEEK_SET);
++}
++
++static void _pblvlDisableAndFinalize(struct mVideoLogContext* context) {
++	if (!context->pebbleExport || !context->pebbleState) {
++		return;
++	}
++	struct _PblvlWriter* w = context->pebbleState;
++	if (!w->headerWritten) {
++		_pblvlWriteHeaderAndKeyframe(w);
++	}
++	// Patch frame count
++	w->vf->seek(w->vf, 16, SEEK_SET);
++	_pblvlWriteU32(w->vf, w->nFrames);
++	w->vf->seek(w->vf, 0, SEEK_END);
++
++	free(w->palUpdates);
++	free(w->objPalUpdates);
++	free(w->tileUpdates);
++	free(w->mapUpdates);
++	free(w->oamUpdates);
++	free(w->vram);
++	free(w);
++	context->pebbleState = NULL;
++	context->pebbleExport = false;
++}
+ 
+ static bool _writeData(struct mVideoLogger* logger, const void* data, size_t length);
+ static bool _writeNull(struct mVideoLogger* logger, const void* data, size_t length);
+@@ -280,7 +894,8 @@ void mVideoLoggerRendererFinishFrame(struct mVideoLogger* logger) {
+ 	logger->writeData(logger, &dirty, sizeof(dirty));
+ }
+ 
+-void mVideoLoggerWriteBuffer(struct mVideoLogger* logger, uint32_t bufferId, uint32_t offset, uint32_t length, const void* data) {
++void mVideoLoggerWriteBuffer(struct mVideoLogger* logger, uint32_t bufferId, uint32_t offset, uint32_t length,
++                             const void* data) {
+ 	struct mVideoLoggerDirtyInfo dirty = {
+ 		DIRTY_BUFFER,
+ 		bufferId,
+@@ -298,8 +913,8 @@ bool mVideoLoggerRendererRun(struct mVideoLogger* logger, bool block) {
+ 		mVideoLoggerRendererRunInjected(logger);
+ 		ignorePackets = channel->ignorePackets;
+ 	}
+-	struct mVideoLoggerDirtyInfo buffer = {0};
+-	struct mVideoLoggerDirtyInfo item = {0};
++	struct mVideoLoggerDirtyInfo buffer = { 0 };
++	struct mVideoLoggerDirtyInfo item = { 0 };
+ 	while (logger->readData(logger, &buffer, sizeof(buffer), block)) {
+ 		LOAD_32LE(item.type, 0, &buffer.type);
+ 		if (ignorePackets & (1 << item.type)) {
+@@ -310,7 +925,8 @@ bool mVideoLoggerRendererRun(struct mVideoLogger* logger, bool block) {
+ 		LOAD_32LE(item.value2, 0, &buffer.value2);
+ 		switch (item.type) {
+ 		case DIRTY_SCANLINE:
+-			if (channel && channel->injectionPoint == LOGGER_INJECTION_FIRST_SCANLINE && !channel->injecting && item.address == 0) {
++			if (channel && channel->injectionPoint == LOGGER_INJECTION_FIRST_SCANLINE && !channel->injecting &&
++			    item.address == 0) {
+ 				mVideoLoggerRendererRunInjected(logger);
+ 				ignorePackets = channel->ignorePackets;
+ 			}
+@@ -339,17 +955,17 @@ bool mVideoLoggerRendererRunInjected(struct mVideoLogger* logger) {
+ 	channel->injecting = true;
+ 	bool res = mVideoLoggerRendererRun(logger, false);
+ 	channel->injecting = false;
+-	return res;	
++	return res;
+ }
+ 
+ void mVideoLoggerInjectionPoint(struct mVideoLogger* logger, enum mVideoLoggerInjectionPoint injectionPoint) {
+ 	struct mVideoLogChannel* channel = logger->dataContext;
+-	channel->injectionPoint = injectionPoint;	
++	channel->injectionPoint = injectionPoint;
+ }
+ 
+ void mVideoLoggerIgnoreAfterInjection(struct mVideoLogger* logger, uint32_t mask) {
+ 	struct mVideoLogChannel* channel = logger->dataContext;
+-	channel->ignorePackets = mask;	
++	channel->ignorePackets = mask;
+ }
+ 
+ static bool _writeData(struct mVideoLogger* logger, const void* data, size_t length) {
+@@ -507,6 +1123,9 @@ struct mVideoLogContext* mVideoLogContextCreate(struct mCore* core) {
+ 	memset(context, 0, sizeof(*context));
+ 
+ 	context->write = !!core;
++	context->core = core;
++	context->pebbleExport = false;
++	context->pebbleState = NULL;
+ 	context->initialStateSize = 0;
+ 	context->initialState = NULL;
+ 
+@@ -531,6 +1150,7 @@ void mVideoLogContextSetOutput(struct mVideoLogContext* context, struct VFile* v
+ 	context->backing = vf;
+ 	vf->truncate(vf, 0);
+ 	vf->seek(vf, 0, SEEK_SET);
++	_pblvlEnable(context);
+ }
+ 
+ void mVideoLogContextSetCompression(struct mVideoLogContext* context, bool compression) {
+@@ -538,6 +1158,12 @@ void mVideoLogContextSetCompression(struct mVideoLogContext* context, bool compr
+ }
+ 
+ void mVideoLogContextWriteHeader(struct mVideoLogContext* context, struct mCore* core) {
++	if (context->pebbleExport && context->pebbleState && core && core->platform(core) == mPLATFORM_GB) {
++		struct _PblvlWriter* w = context->pebbleState;
++		_pblvlInitFromCore(w, core);
++		_pblvlWriteHeaderAndKeyframe(w);
++		return;
++	}
+ 	struct mVideoLogHeader header = { { 0 } };
+ 	memcpy(header.magic, mVL_MAGIC, sizeof(header.magic));
+ 	enum mPlatform platform = core->platform(core);
+@@ -574,7 +1200,7 @@ void mVideoLogContextWriteHeader(struct mVideoLogContext* context, struct mCore*
+ 		}
+ 	}
+ 
+- 	size_t i;
++	size_t i;
+ 	for (i = 0; i < context->nChannels; ++i) {
+ 		struct mVLBlockHeader chheader = { 0 };
+ 		STORE_32LE(mVL_BLOCK_CHANNEL_HEADER, 0, &chheader.blockType);
+@@ -733,11 +1359,14 @@ static void _flushBuffer(struct mVideoLogContext* context) {
+ 
+ void mVideoLogContextDestroy(struct mCore* core, struct mVideoLogContext* context, bool closeVF) {
+ 	if (context->write) {
+-		_flushBuffer(context);
+-
+-		struct mVLBlockHeader header = { 0 };
+-		STORE_32LE(mVL_BLOCK_FOOTER, 0, &header.blockType);
+-		context->backing->write(context->backing, &header, sizeof(header));
++		if (context->pebbleExport) {
++			_pblvlDisableAndFinalize(context);
++		} else {
++			_flushBuffer(context);
++			struct mVLBlockHeader header = { 0 };
++			STORE_32LE(mVL_BLOCK_FOOTER, 0, &header.blockType);
++			context->backing->write(context->backing, &header, sizeof(header));
++		}
+ 	}
+ 
+ 	if (core) {
+@@ -1021,6 +1650,13 @@ static ssize_t mVideoLoggerWriteChannel(struct mVideoLogChannel* channel, const
+ 	if (channelId >= mVL_MAX_CHANNELS) {
+ 		return 0;
+ 	}
++	if (context->pebbleExport && context->pebbleState) {
++		struct _PblvlWriter* w = context->pebbleState;
++		if (w && data && length) {
++			_pblvlConsume(w, data, length);
++		}
++		return (ssize_t) length;
++	}
+ 	if (channelId != context->activeChannel) {
+ 		_flushBuffer(context);
+ 		context->activeChannel = channelId;
+diff --git a/src/platform/qt/CMakeLists.txt b/src/platform/qt/CMakeLists.txt
+index 19ab3516d..7982a1423 100644
+--- a/src/platform/qt/CMakeLists.txt
++++ b/src/platform/qt/CMakeLists.txt
+@@ -25,7 +25,10 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
+ 
+ set(QT_LIBRARIES)
+ 
+-find_package(Qt5 COMPONENTS Core Widgets Network Multimedia)
++# NOTE: Keep Multimedia optional so the Qt frontend can still configure/build
++# on systems without the QtMultimedia development package.
++find_package(Qt5 COMPONENTS Core Widgets Network REQUIRED)
++find_package(Qt5 COMPONENTS Multimedia QUIET)
+ set(QT Qt5)
+ 
+ if(NOT BUILD_GL AND NOT BUILD_GLES2 AND NOT BUILD_GLES3)
+@@ -38,6 +41,25 @@ if(NOT ${QT}Widgets_FOUND)
+ 	return()
+ endif()
+ 
++# Standalone PBLV editor: does not depend on the emulator core or audio.
++add_executable(${BINARY_NAME}-pblv-editor
++	pblv/main.cpp
++	pblv/PblvDocument.cpp
++	pblv/PblvFramesModel.cpp
++	pblv/PblvFramesWindow.cpp
++	pblv/PblvMapModel.cpp
++	pblv/PblvMapWindow.cpp
++	pblv/PblvMainWindow.cpp
++	pblv/PblvPalettesModel.cpp
++	pblv/PblvPalettesWindow.cpp
++	pblv/PblvSpritesModel.cpp
++	pblv/PblvSpritesWindow.cpp
++	pblv/PblvTilesModel.cpp
++	pblv/PblvTilesWindow.cpp
++	pblv/PblvTileMapWidget.cpp)
++
++target_link_libraries(${BINARY_NAME}-pblv-editor ${QT}::Widgets)
++
+ if(APPLE)
+ 	if(MACOSX_SDK VERSION_GREATER 10.14)
+ 		list(APPEND QT_DEFINES USE_SHARE_WIDGET)
+@@ -324,7 +346,7 @@ if(NOT WIN32 AND NOT APPLE)
+ 	endif()
+ endif()
+ 
+-find_package(${QT}LinguistTools)
++find_package(${QT}LinguistTools QUIET)
+ if(${QT}LinguistTools_FOUND)
+ 	set(TRANSLATION_FILES)
+ 	set(TRANSLATION_QRC "${CMAKE_CURRENT_BINARY_DIR}/ts.qrc")
+diff --git a/src/platform/qt/pblv/PblvDocument.cpp b/src/platform/qt/pblv/PblvDocument.cpp
+new file mode 100644
+index 000000000..feaf4794a
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvDocument.cpp
+@@ -0,0 +1,1070 @@
++#include "PblvDocument.h"
++
++#include <QtCore/QFile>
++
++namespace {
++QString _fail(QString* out, const QString& msg) {
++	if (out) {
++		*out = msg;
++	}
++	return msg;
++}
++
++bool _hasBytes(const QByteArray& data, int offset, int len) {
++	if (offset < 0 || len < 0) {
++		return false;
++	}
++	return offset + len <= data.size();
++}
++} // namespace
++
++PblvDocument::PblvDocument(QObject* parent)
++    : QObject(parent) { }
++
++bool PblvDocument::isLoaded() const {
++	return !m_data.isEmpty() && m_mapW != 0 && m_mapH != 0;
++}
++
++QString PblvDocument::filePath() const {
++	return m_path;
++}
++
++quint16 PblvDocument::mapW() const {
++	return m_mapW;
++}
++
++quint16 PblvDocument::mapH() const {
++	return m_mapH;
++}
++
++quint16 PblvDocument::tileCount() const {
++	return m_tileCount;
++}
++
++quint16 PblvDocument::bankCount() const {
++	return m_bankCount;
++}
++
++quint16 PblvDocument::tileW() const {
++	return 16;
++}
++
++quint16 PblvDocument::tileH() const {
++	return 16;
++}
++
++quint16 PblvDocument::tileBytesPerTile() const {
++	// Pebble-packed 2bpp: 4 pixels per byte.
++	return static_cast<quint16>((tileW() * tileH()) / 4);
++}
++
++bool PblvDocument::isCgb() const {
++	return m_isCgb;
++}
++
++quint8 PblvDocument::lcdc() const {
++	return m_lcdc;
++}
++
++int PblvDocument::spriteHeight() const {
++	return (m_lcdc & 0x04) ? 16 : 8;
++}
++
++quint32 PblvDocument::tileIdFromTileKey(quint16 tileKey) const {
++	const quint32 tileIndex = static_cast<quint32>(tileKey & 0x7FFFu);
++	const quint32 bank = static_cast<quint32>((tileKey >> 15) & 1u);
++	return bank * static_cast<quint32>(m_tileCount) + tileIndex;
++}
++
++bool PblvDocument::tileKeyFromTileId(quint32 tileId, quint16* outTileKey) const {
++	if (!outTileKey) {
++		return false;
++	}
++	*outTileKey = 0;
++	if (m_tileCount == 0 || m_bankCount == 0) {
++		return false;
++	}
++	const quint32 tileCount = static_cast<quint32>(m_tileCount);
++	const quint32 bank = tileId / tileCount;
++	const quint32 tileIndex = tileId % tileCount;
++	if (bank >= static_cast<quint32>(m_bankCount)) {
++		return false;
++	}
++	if (tileIndex >= tileCount) {
++		return false;
++	}
++	const quint16 tileKey = static_cast<quint16>(((bank & 1u) << 15) | (tileIndex & 0x7FFFu));
++	*outTileKey = tileKey;
++	return true;
++}
++
++QVector<quint8> PblvDocument::bgPaletteBytes() const {
++	return m_previewActive ? m_previewBgPaletteBytes : m_bgPaletteBytes;
++}
++
++QVector<quint8> PblvDocument::objPaletteBytes() const {
++	return m_previewActive ? m_previewObjPaletteBytes : m_objPaletteBytes;
++}
++
++int PblvDocument::spriteCount() const {
++	return m_oamBytes.size() / 4;
++}
++
++bool PblvDocument::spriteRaw(int index, quint8* outY, quint8* outX, quint8* outTile, quint8* outAttr) const {
++	if (!isLoaded()) {
++		return false;
++	}
++	if (index < 0 || index >= spriteCount()) {
++		return false;
++	}
++	const int off = index * 4;
++	const QByteArray& oam = m_previewActive ? m_previewOamBytes : m_oamBytes;
++	if (outY) {
++		*outY = static_cast<quint8>(oam[off + 0]);
++	}
++	if (outX) {
++		*outX = static_cast<quint8>(oam[off + 1]);
++	}
++	if (outTile) {
++		*outTile = static_cast<quint8>(oam[off + 2]);
++	}
++	if (outAttr) {
++		*outAttr = static_cast<quint8>(oam[off + 3]);
++	}
++	return true;
++}
++
++bool PblvDocument::setSpriteRaw(int index, quint8 y, quint8 x, quint8 tile, quint8 attr) {
++	if (!isLoaded()) {
++		return false;
++	}
++	if (index < 0 || index >= spriteCount()) {
++		return false;
++	}
++	const int off = index * 4;
++	if (off + 3 >= m_oamBytes.size()) {
++		return false;
++	}
++	const bool changedBase = (static_cast<quint8>(m_oamBytes[off + 0]) != y) ||
++	    (static_cast<quint8>(m_oamBytes[off + 1]) != x) || (static_cast<quint8>(m_oamBytes[off + 2]) != tile) ||
++	    (static_cast<quint8>(m_oamBytes[off + 3]) != attr);
++	bool changedPreview = false;
++	if (m_previewActive && m_previewOamBytes.size() > off + 3) {
++		changedPreview = (static_cast<quint8>(m_previewOamBytes[off + 0]) != y) ||
++		    (static_cast<quint8>(m_previewOamBytes[off + 1]) != x) ||
++		    (static_cast<quint8>(m_previewOamBytes[off + 2]) != tile) ||
++		    (static_cast<quint8>(m_previewOamBytes[off + 3]) != attr);
++	}
++	if (!changedBase && !changedPreview) {
++		return true;
++	}
++	m_oamBytes[off + 0] = static_cast<char>(y);
++	m_oamBytes[off + 1] = static_cast<char>(x);
++	m_oamBytes[off + 2] = static_cast<char>(tile);
++	m_oamBytes[off + 3] = static_cast<char>(attr);
++	if (m_previewActive && m_previewOamBytes.size() > off + 3) {
++		m_previewOamBytes[off + 0] = static_cast<char>(y);
++		m_previewOamBytes[off + 1] = static_cast<char>(x);
++		m_previewOamBytes[off + 2] = static_cast<char>(tile);
++		m_previewOamBytes[off + 3] = static_cast<char>(attr);
++	}
++	if (m_oamOffset > 0 && _hasBytes(m_data, m_oamOffset + off, 4)) {
++		m_data[m_oamOffset + off + 0] = static_cast<char>(y);
++		m_data[m_oamOffset + off + 1] = static_cast<char>(x);
++		m_data[m_oamOffset + off + 2] = static_cast<char>(tile);
++		m_data[m_oamOffset + off + 3] = static_cast<char>(attr);
++	}
++	emit documentChanged();
++	return true;
++}
++
++bool PblvDocument::setBgPaletteEntry(int paletteId, int colorId, quint8 gcolor) {
++	if (!isLoaded()) {
++		return false;
++	}
++	if (paletteId < 0 || paletteId >= 8 || colorId < 0 || colorId >= 4) {
++		return false;
++	}
++	const int idx = paletteId * 4 + colorId;
++	if (idx < 0 || idx >= m_bgPaletteBytes.size()) {
++		return false;
++	}
++	if (!_hasBytes(m_data, m_paletteOffset + idx, 1)) {
++		return false;
++	}
++	if (m_bgPaletteBytes[idx] == gcolor && static_cast<quint8>(m_data[m_paletteOffset + idx]) == gcolor) {
++		return true;
++	}
++	m_bgPaletteBytes[idx] = gcolor;
++	m_data[m_paletteOffset + idx] = static_cast<char>(gcolor);
++	emit documentChanged();
++	return true;
++}
++
++bool PblvDocument::setObjPaletteEntry(int paletteId, int colorId, quint8 gcolor) {
++	if (!isLoaded()) {
++		return false;
++	}
++	if (paletteId < 0 || paletteId >= 8 || colorId < 0 || colorId >= 4) {
++		return false;
++	}
++	const int idx = paletteId * 4 + colorId;
++	if (idx < 0 || idx >= m_objPaletteBytes.size()) {
++		return false;
++	}
++	if (m_objPaletteOffset <= 0 || !_hasBytes(m_data, m_objPaletteOffset + idx, 1)) {
++		return false;
++	}
++	if (m_objPaletteBytes[idx] == gcolor && static_cast<quint8>(m_data[m_objPaletteOffset + idx]) == gcolor) {
++		return true;
++	}
++	m_objPaletteBytes[idx] = gcolor;
++	m_data[m_objPaletteOffset + idx] = static_cast<char>(gcolor);
++	emit documentChanged();
++	return true;
++}
++
++quint16 PblvDocument::mapTileKey(int x, int y) const {
++	if (x < 0 || y < 0 || x >= m_mapW || y >= m_mapH) {
++		return 0;
++	}
++	const int index = x + y * m_mapW;
++	return (m_previewActive ? m_previewMapTileKeys : m_mapTileKeys).value(index);
++}
++
++quint8 PblvDocument::mapPalette(int x, int y) const {
++	if (x < 0 || y < 0 || x >= m_mapW || y >= m_mapH) {
++		return 0;
++	}
++	const int index = x + y * m_mapW;
++	return (m_previewActive ? m_previewMapPalettes : m_mapPalettes).value(index);
++}
++
++void PblvDocument::setMapCell(int x, int y, quint16 tileKey, quint8 palette) {
++	if (x < 0 || y < 0 || x >= m_mapW || y >= m_mapH) {
++		return;
++	}
++	const int index = x + y * m_mapW;
++	if (index < 0 || index >= m_mapTileKeys.size() || index >= m_mapPalettes.size()) {
++		return;
++	}
++	palette &= 7;
++	if (m_mapTileKeys[index] == tileKey && m_mapPalettes[index] == palette) {
++		return;
++	}
++	m_mapTileKeys[index] = tileKey;
++	m_mapPalettes[index] = palette;
++	emit documentChanged();
++}
++
++bool PblvDocument::tilePixels(quint16 bank, quint16 tileIndex, const quint8** outPtr) const {
++	if (!outPtr) {
++		return false;
++	}
++	*outPtr = nullptr;
++	if (!isLoaded()) {
++		return false;
++	}
++	if (bank >= m_bankCount || tileIndex >= m_tileCount) {
++		return false;
++	}
++	const int tileSize = static_cast<int>(tileBytesPerTile());
++	const int tilesPerBankBytes = static_cast<int>(m_tileCount) * tileSize;
++	if (m_previewActive) {
++		const int offset = (bank * tilesPerBankBytes) + (tileIndex * tileSize);
++		if (!_hasBytes(m_previewTileTable, offset, tileSize)) {
++			return false;
++		}
++		*outPtr = reinterpret_cast<const quint8*>(m_previewTileTable.constData() + offset);
++		return true;
++	}
++	const int tileTableSizeBytes = m_bankCount * tilesPerBankBytes;
++	const int offset = m_tileTableOffset + (bank * tilesPerBankBytes) + (tileIndex * tileSize);
++	if (!_hasBytes(m_data, offset, tileSize) || !_hasBytes(m_data, m_tileTableOffset, tileTableSizeBytes)) {
++		return false;
++	}
++	*outPtr = reinterpret_cast<const quint8*>(m_data.constData() + offset);
++	return true;
++}
++
++bool PblvDocument::setTilePixel(quint16 bank, quint16 tileIndex, int x, int y, quint8 value) {
++	if (!isLoaded()) {
++		return false;
++	}
++	if (bank >= m_bankCount || tileIndex >= m_tileCount) {
++		return false;
++	}
++	const int tileW = this->tileW();
++	const int tileH = this->tileH();
++	if (x < 0 || y < 0 || x >= tileW || y >= tileH) {
++		return false;
++	}
++	value &= 3;
++
++	const int bytesPerRow = tileW / 4;
++	const int tileSize = static_cast<int>(tileBytesPerTile());
++	const int tilesPerBankBytes = static_cast<int>(m_tileCount) * tileSize;
++	const int offset =
++	    m_tileTableOffset + (static_cast<int>(bank) * tilesPerBankBytes) + (static_cast<int>(tileIndex) * tileSize);
++	if (!_hasBytes(m_data, offset, tileSize)) {
++		return false;
++	}
++
++	const int byteOff = offset + y * bytesPerRow + (x / 4);
++	if (!_hasBytes(m_data, byteOff, 1)) {
++		return false;
++	}
++
++	const int shift = 6 - 2 * (x & 3);
++	const quint8 mask = static_cast<quint8>(3u << shift);
++	quint8 b = static_cast<quint8>(m_data[byteOff]);
++	const quint8 old = static_cast<quint8>((b >> shift) & 3u);
++	if (old == value) {
++		return true;
++	}
++	b = static_cast<quint8>((b & ~mask) | ((value & 3u) << shift));
++	m_data[byteOff] = static_cast<char>(b);
++	emit documentChanged();
++	return true;
++}
++
++bool PblvDocument::cycleTilePixels(quint16 bank, quint16 tileIndex, const QRect& rect, int delta) {
++	if (!isLoaded()) {
++		return false;
++	}
++	if (bank >= m_bankCount || tileIndex >= m_tileCount) {
++		return false;
++	}
++	if (!rect.isValid()) {
++		return false;
++	}
++	if (delta == 0) {
++		return true;
++	}
++
++	const int tileW = this->tileW();
++	const int tileH = this->tileH();
++	QRect r = rect.normalized();
++	r = r.intersected(QRect(0, 0, tileW, tileH));
++	if (!r.isValid()) {
++		return false;
++	}
++
++	const int bytesPerRow = tileW / 4;
++	const int tileSize = static_cast<int>(tileBytesPerTile());
++	const int tilesPerBankBytes = static_cast<int>(m_tileCount) * tileSize;
++	const int base =
++	    m_tileTableOffset + (static_cast<int>(bank) * tilesPerBankBytes) + (static_cast<int>(tileIndex) * tileSize);
++	if (!_hasBytes(m_data, base, tileSize)) {
++		return false;
++	}
++
++	const int normDelta = ((delta % 4) + 4) % 4;
++	bool anyChanged = false;
++	for (int y = r.top(); y <= r.bottom(); ++y) {
++		for (int x = r.left(); x <= r.right(); ++x) {
++			const int byteOff = base + y * bytesPerRow + (x / 4);
++			const int shift = 6 - 2 * (x & 3);
++			const quint8 mask = static_cast<quint8>(3u << shift);
++			quint8 b = static_cast<quint8>(m_data[byteOff]);
++			const quint8 oldPx = static_cast<quint8>((b >> shift) & 3u);
++			const quint8 newPx = static_cast<quint8>((oldPx + normDelta) & 3u);
++			if (oldPx == newPx) {
++				continue;
++			}
++			b = static_cast<quint8>((b & ~mask) | ((newPx & 3u) << shift));
++			m_data[byteOff] = static_cast<char>(b);
++			anyChanged = true;
++		}
++	}
++	if (anyChanged) {
++		emit documentChanged();
++	}
++	return true;
++}
++
++int PblvDocument::frameCount() const {
++	return m_frames.size();
++}
++
++const PblvDocument::PblvFrameRecord* PblvDocument::frame(int index) const {
++	if (index < 0 || index >= m_frames.size()) {
++		return nullptr;
++	}
++	return &m_frames[index];
++}
++
++bool PblvDocument::removeFrame(int index) {
++	if (index < 0 || index >= m_frames.size()) {
++		return false;
++	}
++	if (index + 1 < m_frames.size()) {
++		const quint32 sum =
++		    static_cast<quint32>(m_frames[index].deltaFrames) + static_cast<quint32>(m_frames[index + 1].deltaFrames);
++		m_frames[index + 1].deltaFrames = static_cast<quint16>(sum > 0xFFFFu ? 0xFFFFu : sum);
++	}
++	m_frames.removeAt(index);
++	m_framesDirty = true;
++	clearPreviewFrame();
++	emit framesChanged();
++	emit documentChanged();
++	return true;
++}
++
++bool PblvDocument::removeMapUpdate(int frameIndex, int updateIndex) {
++	if (frameIndex < 0 || frameIndex >= m_frames.size()) {
++		return false;
++	}
++	auto& frame = m_frames[frameIndex];
++	if (updateIndex < 0 || updateIndex >= frame.mapUpdates.size()) {
++		return false;
++	}
++	frame.mapUpdates.removeAt(updateIndex);
++	m_framesDirty = true;
++	emit framesChanged();
++	emit documentChanged();
++	return true;
++}
++
++bool PblvDocument::removeOamUpdate(int frameIndex, int updateIndex) {
++	if (frameIndex < 0 || frameIndex >= m_frames.size()) {
++		return false;
++	}
++	auto& frame = m_frames[frameIndex];
++	if (updateIndex < 0 || updateIndex >= frame.oamUpdates.size()) {
++		return false;
++	}
++	frame.oamUpdates.removeAt(updateIndex);
++	m_framesDirty = true;
++	emit framesChanged();
++	emit documentChanged();
++	return true;
++}
++
++bool PblvDocument::setPreviewFrame(int frameIndex) {
++	if (frameIndex < 0 || frameIndex >= m_frames.size()) {
++		clearPreviewFrame();
++		return false;
++	}
++	m_previewActive = true;
++	m_previewBgPaletteBytes = m_keyframeBgPaletteBytes.isEmpty() ? m_bgPaletteBytes : m_keyframeBgPaletteBytes;
++	m_previewObjPaletteBytes = m_keyframeObjPaletteBytes.isEmpty() ? m_objPaletteBytes : m_keyframeObjPaletteBytes;
++	m_previewMapTileKeys = m_keyframeMapTileKeys.isEmpty() ? m_mapTileKeys : m_keyframeMapTileKeys;
++	m_previewMapPalettes = m_keyframeMapPalettes.isEmpty() ? m_mapPalettes : m_keyframeMapPalettes;
++	m_previewTileTable = m_keyframeTileTable.isEmpty() ? QByteArray() : m_keyframeTileTable;
++	if (m_previewTileTable.isEmpty() && m_tileTableOffset > 0) {
++		const int tileSize = static_cast<int>(tileBytesPerTile());
++		const int tileTableBytes = static_cast<int>(m_bankCount) * static_cast<int>(m_tileCount) * tileSize;
++		if (_hasBytes(m_data, m_tileTableOffset, tileTableBytes)) {
++			m_previewTileTable = QByteArray(m_data.constData() + m_tileTableOffset, tileTableBytes);
++		}
++	}
++	m_previewOamBytes = m_keyframeOamBytes.isEmpty() ? m_oamBytes : m_keyframeOamBytes;
++
++	for (int i = 0; i <= frameIndex; ++i) {
++		_applyFrameToPreview(m_frames[i]);
++	}
++	emit documentChanged();
++	return true;
++}
++
++void PblvDocument::clearPreviewFrame() {
++	m_previewActive = false;
++	m_previewAnimatedMap.clear();
++	m_previewAnimatedSprites.clear();
++	emit documentChanged();
++}
++
++QVector<int> PblvDocument::previewAnimatedMap() const {
++	return m_previewAnimatedMap;
++}
++
++QVector<int> PblvDocument::previewAnimatedSprites() const {
++	return m_previewAnimatedSprites;
++}
++
++void PblvDocument::setPreviewAnimatedMap(const QVector<int>& mapIndices) {
++	m_previewAnimatedMap = mapIndices;
++	emit documentChanged();
++}
++
++void PblvDocument::setPreviewAnimatedSprites(const QVector<int>& spriteIndices) {
++	m_previewAnimatedSprites = spriteIndices;
++	emit documentChanged();
++}
++
++bool PblvDocument::loadFromFile(const QString& path, QString* errorMessage) {
++	QFile f(path);
++	if (!f.open(QIODevice::ReadOnly)) {
++		_fail(errorMessage, QString("Failed to open file: %1").arg(path));
++		return false;
++	}
++	m_path = path;
++	m_data = f.readAll();
++	if (m_data.isEmpty()) {
++		_fail(errorMessage, QString("Empty file: %1").arg(path));
++		return false;
++	}
++	if (!_parse(errorMessage)) {
++		return false;
++	}
++	emit documentLoaded();
++	return true;
++}
++
++bool PblvDocument::saveToFile(const QString& path, QString* errorMessage) {
++	if (!isLoaded()) {
++		_fail(errorMessage, "No document loaded");
++		return false;
++	}
++	if (!_syncMapIntoData(errorMessage)) {
++		return false;
++	}
++	if (!_syncFramesIntoData(errorMessage)) {
++		return false;
++	}
++	QFile f(path);
++	if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
++		_fail(errorMessage, QString("Failed to write file: %1").arg(path));
++		return false;
++	}
++	if (f.write(m_data) != m_data.size()) {
++		_fail(errorMessage, QString("Short write while saving: %1").arg(path));
++		return false;
++	}
++	m_path = path;
++	return true;
++}
++
++bool PblvDocument::_readU16(const QByteArray& data, int offset, quint16* out) {
++	if (!_hasBytes(data, offset, 2) || !out) {
++		return false;
++	}
++	const quint8 b0 = static_cast<quint8>(data[offset + 0]);
++	const quint8 b1 = static_cast<quint8>(data[offset + 1]);
++	*out = static_cast<quint16>(b0 | (static_cast<quint16>(b1) << 8));
++	return true;
++}
++
++bool PblvDocument::_readU32(const QByteArray& data, int offset, quint32* out) {
++	if (!_hasBytes(data, offset, 4) || !out) {
++		return false;
++	}
++	const quint8 b0 = static_cast<quint8>(data[offset + 0]);
++	const quint8 b1 = static_cast<quint8>(data[offset + 1]);
++	const quint8 b2 = static_cast<quint8>(data[offset + 2]);
++	const quint8 b3 = static_cast<quint8>(data[offset + 3]);
++	*out = static_cast<quint32>(b0) | (static_cast<quint32>(b1) << 8) | (static_cast<quint32>(b2) << 16) |
++	    (static_cast<quint32>(b3) << 24);
++	return true;
++}
++
++void PblvDocument::_writeU16(QByteArray& data, int offset, quint16 v) {
++	if (!_hasBytes(data, offset, 2)) {
++		return;
++	}
++	data[offset + 0] = static_cast<char>(v & 0xFF);
++	data[offset + 1] = static_cast<char>((v >> 8) & 0xFF);
++}
++
++void PblvDocument::_writeU32(QByteArray& data, int offset, quint32 v) {
++	if (!_hasBytes(data, offset, 4)) {
++		return;
++	}
++	data[offset + 0] = static_cast<char>(v & 0xFF);
++	data[offset + 1] = static_cast<char>((v >> 8) & 0xFF);
++	data[offset + 2] = static_cast<char>((v >> 16) & 0xFF);
++	data[offset + 3] = static_cast<char>((v >> 24) & 0xFF);
++}
++
++void PblvDocument::_appendU16(QByteArray& data, quint16 v) {
++	data.append(static_cast<char>(v & 0xFF));
++	data.append(static_cast<char>((v >> 8) & 0xFF));
++}
++
++void PblvDocument::_appendU32(QByteArray& data, quint32 v) {
++	data.append(static_cast<char>(v & 0xFF));
++	data.append(static_cast<char>((v >> 8) & 0xFF));
++	data.append(static_cast<char>((v >> 16) & 0xFF));
++	data.append(static_cast<char>((v >> 24) & 0xFF));
++}
++
++bool PblvDocument::_parse(QString* errorMessage) {
++	m_version = 0;
++	m_headerSize = 0;
++	m_keyframeOffset = 0;
++	m_framesOffset = 0;
++	m_nFrames = 0;
++	m_mapW = 0;
++	m_mapH = 0;
++	m_tileCount = 0;
++	m_bankCount = 0;
++	m_keyframeBase = 0;
++	m_keyframeEnd = 0;
++	m_paletteOffset = 0;
++	m_tileTableOffset = 0;
++	m_mapOffset = 0;
++	m_objPaletteOffset = 0;
++	m_oamOffset = 0;
++	m_bgPaletteBytes.clear();
++	m_objPaletteBytes.clear();
++	m_oamBytes.clear();
++	m_mapTileKeys.clear();
++	m_mapPalettes.clear();
++	m_keyframeBgPaletteBytes.clear();
++	m_keyframeObjPaletteBytes.clear();
++	m_keyframeMapTileKeys.clear();
++	m_keyframeMapPalettes.clear();
++	m_keyframeTileTable.clear();
++	m_keyframeOamBytes.clear();
++	m_frames.clear();
++	m_framesDirty = false;
++	m_previewActive = false;
++	m_previewBgPaletteBytes.clear();
++	m_previewObjPaletteBytes.clear();
++	m_previewMapTileKeys.clear();
++	m_previewMapPalettes.clear();
++	m_previewTileTable.clear();
++	m_previewOamBytes.clear();
++	m_previewAnimatedMap.clear();
++	m_previewAnimatedSprites.clear();
++	m_lcdc = 0;
++	m_isCgb = false;
++
++	if (!_hasBytes(m_data, 0, 32)) {
++		_fail(errorMessage, "File too small for PBLV header");
++		return false;
++	}
++	if (m_data.mid(0, 4) != QByteArray("PBLV", 4)) {
++		_fail(errorMessage, "Not a PBLV file (missing magic)");
++		return false;
++	}
++	if (!_readU16(m_data, 0x04, &m_version) || m_version != 1) {
++		_fail(errorMessage, "Unsupported PBLV version");
++		return false;
++	}
++	if (!_readU16(m_data, 0x06, &m_headerSize) || m_headerSize != 32) {
++		_fail(errorMessage, "Unexpected header size");
++		return false;
++	}
++	if (!_readU32(m_data, 0x08, &m_keyframeOffset)) {
++		_fail(errorMessage, "Failed to read keyframeOffset");
++		return false;
++	}
++	if (!_readU32(m_data, 0x0C, &m_framesOffset)) {
++		_fail(errorMessage, "Failed to read framesOffset");
++		return false;
++	}
++	if (!_readU32(m_data, 0x10, &m_nFrames)) {
++		_fail(errorMessage, "Failed to read nFrames");
++		return false;
++	}
++	if (!_readU16(m_data, 0x14, &m_mapW) || !_readU16(m_data, 0x16, &m_mapH)) {
++		_fail(errorMessage, "Failed to read mapW/mapH");
++		return false;
++	}
++	if (!_rebuildKeyframeOffsets(errorMessage)) {
++		return false;
++	}
++	return _parseFrames(errorMessage);
++}
++
++bool PblvDocument::_rebuildKeyframeOffsets(QString* errorMessage) {
++	const int base = static_cast<int>(m_keyframeOffset);
++	if (!_hasBytes(m_data, base, 8 + 8)) {
++		_fail(errorMessage, "Keyframe truncated");
++		return false;
++	}
++	if (m_data.mid(base, 4) != QByteArray("KEYF", 4)) {
++		_fail(errorMessage, "Missing KEYF tag");
++		return false;
++	}
++	// Skip tag+length
++	int o = base + 8;
++
++	// Keyframe parameters (8 bytes)
++	if (!_hasBytes(m_data, o, 8)) {
++		_fail(errorMessage, "Keyframe parameters truncated");
++		return false;
++	}
++	m_isCgb = static_cast<quint8>(m_data[o + 0]) != 0;
++	m_lcdc = static_cast<quint8>(m_data[o + 1]);
++	// byte 5 = tileDataSelect
++	m_tileDataSelect = static_cast<quint8>(m_data[o + 5]);
++	o += 8;
++
++	// tileCount/bankCount/mapW/mapH/reserved0/reserved1 (12 bytes)
++	if (!_readU16(m_data, o + 0, &m_tileCount) || !_readU16(m_data, o + 2, &m_bankCount)) {
++		_fail(errorMessage, "Failed to read tileCount/bankCount");
++		return false;
++	}
++	quint16 keyMapW = 0;
++	quint16 keyMapH = 0;
++	if (!_readU16(m_data, o + 4, &keyMapW) || !_readU16(m_data, o + 6, &keyMapH)) {
++		_fail(errorMessage, "Failed to read keyframe mapW/mapH");
++		return false;
++	}
++	if (keyMapW != m_mapW || keyMapH != m_mapH) {
++		_fail(errorMessage, "Header mapW/mapH mismatch keyframe mapW/mapH");
++		return false;
++	}
++	o += 12;
++
++	// BG palettes
++	quint16 nPaletteBytes = 0;
++	if (!_readU16(m_data, o, &nPaletteBytes)) {
++		_fail(errorMessage, "Failed to read nPaletteBytes");
++		return false;
++	}
++	o += 2;
++	if (nPaletteBytes != 32) {
++		_fail(errorMessage, "Unexpected palette byte count (expected 32)");
++		return false;
++	}
++	m_paletteOffset = o;
++	if (!_hasBytes(m_data, m_paletteOffset, 32)) {
++		_fail(errorMessage, "Palette data truncated");
++		return false;
++	}
++	m_bgPaletteBytes.resize(32);
++	for (int i = 0; i < 32; ++i) {
++		m_bgPaletteBytes[i] = static_cast<quint8>(m_data[m_paletteOffset + i]);
++	}
++	o += 32;
++
++	// Tile table
++	const int tileSize = static_cast<int>(tileBytesPerTile());
++	const int tileTableBytes = static_cast<int>(m_bankCount) * static_cast<int>(m_tileCount) * tileSize;
++	m_tileTableOffset = o;
++	if (!_hasBytes(m_data, m_tileTableOffset, tileTableBytes)) {
++		_fail(errorMessage, "Tile table truncated");
++		return false;
++	}
++	o += tileTableBytes;
++
++	// Map table
++	m_mapOffset = o;
++	const int mapCells = static_cast<int>(m_mapW) * static_cast<int>(m_mapH);
++	const int mapBytes = mapCells * m_mapStride;
++	const int keyframeEnd = (m_framesOffset != 0) ? static_cast<int>(m_framesOffset) : m_data.size();
++	if (m_mapOffset + mapBytes > keyframeEnd || !_hasBytes(m_data, m_mapOffset, mapBytes)) {
++		_fail(errorMessage, "Map data truncated");
++		return false;
++	}
++	m_mapTileKeys.resize(mapCells);
++	m_mapPalettes.resize(mapCells);
++	for (int i = 0; i < mapCells; ++i) {
++		const int cellOff = m_mapOffset + i * m_mapStride;
++		quint16 tileKey = 0;
++		if (!_readU16(m_data, cellOff + 0, &tileKey)) {
++			_fail(errorMessage, "Failed reading map tileKey");
++			return false;
++		}
++		const quint8 pal = static_cast<quint8>(m_data[cellOff + 2]);
++		m_mapTileKeys[i] = tileKey;
++		m_mapPalettes[i] = static_cast<quint8>(pal & 7);
++	}
++	o += mapBytes;
++
++	// Optional OBJ palettes
++	if (o + 2 <= keyframeEnd && _hasBytes(m_data, o, 2)) {
++		quint16 nObjPaletteBytes = 0;
++		if (!_readU16(m_data, o, &nObjPaletteBytes)) {
++			_fail(errorMessage, "Failed to read nObjPaletteBytes");
++			return false;
++		}
++		o += 2;
++		if (nObjPaletteBytes != 32) {
++			_fail(errorMessage, "Unexpected OBJ palette byte count (expected 32)");
++			return false;
++		}
++		if (o + 32 > keyframeEnd || !_hasBytes(m_data, o, 32)) {
++			_fail(errorMessage, "OBJ palette data truncated");
++			return false;
++		}
++		m_objPaletteOffset = o;
++		m_objPaletteBytes.resize(32);
++		for (int i = 0; i < 32; ++i) {
++			m_objPaletteBytes[i] = static_cast<quint8>(m_data[o + i]);
++		}
++		o += 32;
++	}
++
++	// Optional OAM bytes
++	if (o + 2 <= keyframeEnd && _hasBytes(m_data, o, 2)) {
++		quint16 oamBytes = 0;
++		if (!_readU16(m_data, o, &oamBytes)) {
++			_fail(errorMessage, "Failed to read oamBytes");
++			return false;
++		}
++		o += 2;
++		if (oamBytes > 0) {
++			if (o + oamBytes > keyframeEnd || !_hasBytes(m_data, o, oamBytes)) {
++				_fail(errorMessage, "OAM data truncated");
++				return false;
++			}
++			m_oamOffset = o;
++			m_oamBytes = m_data.mid(o, oamBytes);
++			o += oamBytes;
++		}
++	}
++
++	m_keyframeEnd = o;
++	m_keyframeBgPaletteBytes = m_bgPaletteBytes;
++	m_keyframeObjPaletteBytes = m_objPaletteBytes;
++	m_keyframeMapTileKeys = m_mapTileKeys;
++	m_keyframeMapPalettes = m_mapPalettes;
++	if (m_tileTableOffset > 0) {
++		const int tileSize = static_cast<int>(tileBytesPerTile());
++		const int tileTableBytes = static_cast<int>(m_bankCount) * static_cast<int>(m_tileCount) * tileSize;
++		if (_hasBytes(m_data, m_tileTableOffset, tileTableBytes)) {
++			m_keyframeTileTable = QByteArray(m_data.constData() + m_tileTableOffset, tileTableBytes);
++		}
++	}
++	if (m_oamBytes.size() > 0) {
++		m_keyframeOamBytes = m_oamBytes;
++	}
++
++	m_keyframeBase = base;
++	return true;
++}
++
++bool PblvDocument::_parseFrames(QString* errorMessage) {
++	m_frames.clear();
++	if (m_framesOffset == 0 || m_nFrames == 0) {
++		return true;
++	}
++	int o = static_cast<int>(m_framesOffset);
++	for (quint32 fi = 0; fi < m_nFrames; ++fi) {
++		if (!_hasBytes(m_data, o, 12)) {
++			_fail(errorMessage, "Frame header truncated");
++			return false;
++		}
++		quint16 delta = 0;
++		quint16 nPal = 0;
++		quint16 nTile = 0;
++		quint16 nMap = 0;
++		quint16 nObjPal = 0;
++		quint16 nOam = 0;
++		if (!_readU16(m_data, o + 0, &delta) || !_readU16(m_data, o + 2, &nPal) || !_readU16(m_data, o + 4, &nTile) ||
++		    !_readU16(m_data, o + 6, &nMap) || !_readU16(m_data, o + 8, &nObjPal) || !_readU16(m_data, o + 10, &nOam)) {
++			_fail(errorMessage, "Failed reading frame header");
++			return false;
++		}
++		o += 12;
++
++		PblvFrameRecord frame;
++		frame.deltaFrames = delta;
++
++		for (int i = 0; i < nPal; ++i) {
++			if (!_hasBytes(m_data, o, 4)) {
++				_fail(errorMessage, "Palette update truncated");
++				return false;
++			}
++			PblvPalUpdate u;
++			u.palette = static_cast<quint8>(m_data[o + 0]);
++			u.color = static_cast<quint8>(m_data[o + 1]);
++			u.gcolor = static_cast<quint8>(m_data[o + 2]);
++			frame.palUpdates.append(u);
++			o += 4;
++		}
++
++		for (int i = 0; i < nTile; ++i) {
++			if (!_hasBytes(m_data, o, 2 + 2 + 64)) {
++				_fail(errorMessage, "Tile update truncated");
++				return false;
++			}
++			quint16 tileKey = 0;
++			if (!_readU16(m_data, o + 0, &tileKey)) {
++				_fail(errorMessage, "Failed reading tileKey");
++				return false;
++			}
++			PblvTileUpdate u;
++			u.tileKey = tileKey;
++			u.data = QByteArray(m_data.constData() + o + 4, 64);
++			frame.tileUpdates.append(u);
++			o += 2 + 2 + 64;
++		}
++
++		for (int i = 0; i < nMap; ++i) {
++			if (!_hasBytes(m_data, o, 6)) {
++				_fail(errorMessage, "Map update truncated");
++				return false;
++			}
++			PblvMapUpdate u;
++			if (!_readU16(m_data, o + 0, &u.mapIndex) || !_readU16(m_data, o + 2, &u.tileKey)) {
++				_fail(errorMessage, "Failed reading map update");
++				return false;
++			}
++			u.palette = static_cast<quint8>(m_data[o + 4]);
++			frame.mapUpdates.append(u);
++			o += 6;
++		}
++
++		for (int i = 0; i < nObjPal; ++i) {
++			if (!_hasBytes(m_data, o, 4)) {
++				_fail(errorMessage, "OBJ palette update truncated");
++				return false;
++			}
++			PblvPalUpdate u;
++			u.palette = static_cast<quint8>(m_data[o + 0]);
++			u.color = static_cast<quint8>(m_data[o + 1]);
++			u.gcolor = static_cast<quint8>(m_data[o + 2]);
++			frame.objPalUpdates.append(u);
++			o += 4;
++		}
++
++		for (int i = 0; i < nOam; ++i) {
++			if (!_hasBytes(m_data, o, 8)) {
++				_fail(errorMessage, "OAM update truncated");
++				return false;
++			}
++			PblvOamUpdate u;
++			if (!_readU16(m_data, o + 0, &u.index)) {
++				_fail(errorMessage, "Failed reading OAM update index");
++				return false;
++			}
++			u.data[0] = static_cast<quint8>(m_data[o + 4]);
++			u.data[1] = static_cast<quint8>(m_data[o + 5]);
++			u.data[2] = static_cast<quint8>(m_data[o + 6]);
++			u.data[3] = static_cast<quint8>(m_data[o + 7]);
++			frame.oamUpdates.append(u);
++			o += 8;
++		}
++
++		m_frames.append(frame);
++	}
++	return true;
++}
++
++void PblvDocument::_applyFrameToPreview(const PblvFrameRecord& frame) {
++	for (const auto& u : frame.palUpdates) {
++		const int idx = (u.palette & 7) * 4 + (u.color & 3);
++		if (idx >= 0 && idx < m_previewBgPaletteBytes.size()) {
++			m_previewBgPaletteBytes[idx] = u.gcolor;
++		}
++	}
++	for (const auto& u : frame.objPalUpdates) {
++		const int idx = (u.palette & 7) * 4 + (u.color & 3);
++		if (idx >= 0 && idx < m_previewObjPaletteBytes.size()) {
++			m_previewObjPaletteBytes[idx] = u.gcolor;
++		}
++	}
++	for (const auto& u : frame.tileUpdates) {
++		const int tileSize = static_cast<int>(tileBytesPerTile());
++		const int tilesPerBankBytes = static_cast<int>(m_tileCount) * tileSize;
++		const int bank = (u.tileKey >> 15) & 1;
++		const int tileIndex = u.tileKey & 0x7FFF;
++		const int offset = bank * tilesPerBankBytes + tileIndex * tileSize;
++		if (_hasBytes(m_previewTileTable, offset, tileSize) && u.data.size() == tileSize) {
++			memcpy(m_previewTileTable.data() + offset, u.data.constData(), tileSize);
++		}
++	}
++	for (const auto& u : frame.mapUpdates) {
++		if (u.mapIndex < m_previewMapTileKeys.size()) {
++			m_previewMapTileKeys[u.mapIndex] = u.tileKey;
++		}
++		if (u.mapIndex < m_previewMapPalettes.size()) {
++			m_previewMapPalettes[u.mapIndex] = static_cast<quint8>(u.palette & 7);
++		}
++	}
++	for (const auto& u : frame.oamUpdates) {
++		const int off = static_cast<int>(u.index) * 4;
++		if (_hasBytes(m_previewOamBytes, off, 4)) {
++			m_previewOamBytes[off + 0] = static_cast<char>(u.data[0]);
++			m_previewOamBytes[off + 1] = static_cast<char>(u.data[1]);
++			m_previewOamBytes[off + 2] = static_cast<char>(u.data[2]);
++			m_previewOamBytes[off + 3] = static_cast<char>(u.data[3]);
++		}
++	}
++}
++
++bool PblvDocument::_syncMapIntoData(QString* errorMessage) {
++	if (!isLoaded()) {
++		_fail(errorMessage, "No document loaded");
++		return false;
++	}
++	const int mapCells = static_cast<int>(m_mapW) * static_cast<int>(m_mapH);
++	if (m_mapTileKeys.size() != mapCells || m_mapPalettes.size() != mapCells) {
++		_fail(errorMessage, "Internal map size mismatch");
++		return false;
++	}
++	const int mapBytes = mapCells * m_mapStride;
++	if (!_hasBytes(m_data, m_mapOffset, mapBytes)) {
++		_fail(errorMessage, "Map offset out of range");
++		return false;
++	}
++	for (int i = 0; i < mapCells; ++i) {
++		const int cellOff = m_mapOffset + i * m_mapStride;
++		_writeU16(m_data, cellOff + 0, m_mapTileKeys[i]);
++		m_data[cellOff + 2] = static_cast<char>(m_mapPalettes[i] & 7);
++		m_data[cellOff + 3] = 0;
++	}
++	return true;
++}
++
++bool PblvDocument::_syncFramesIntoData(QString* errorMessage) {
++	if (!isLoaded()) {
++		_fail(errorMessage, "No document loaded");
++		return false;
++	}
++	if (m_keyframeEnd <= 0) {
++		_fail(errorMessage, "Keyframe end offset invalid");
++		return false;
++	}
++	QByteArray out = m_data.left(m_keyframeEnd);
++	QByteArray framesData;
++	const quint32 nFrames = static_cast<quint32>(m_frames.size());
++	quint32 framesOffset = 0;
++	if (nFrames > 0) {
++		framesOffset = static_cast<quint32>(m_keyframeEnd);
++		for (const auto& frame : m_frames) {
++			_appendU16(framesData, frame.deltaFrames);
++			_appendU16(framesData, static_cast<quint16>(frame.palUpdates.size()));
++			_appendU16(framesData, static_cast<quint16>(frame.tileUpdates.size()));
++			_appendU16(framesData, static_cast<quint16>(frame.mapUpdates.size()));
++			_appendU16(framesData, static_cast<quint16>(frame.objPalUpdates.size()));
++			_appendU16(framesData, static_cast<quint16>(frame.oamUpdates.size()));
++
++			for (const auto& u : frame.palUpdates) {
++				framesData.append(static_cast<char>(u.palette));
++				framesData.append(static_cast<char>(u.color));
++				framesData.append(static_cast<char>(u.gcolor));
++				framesData.append(static_cast<char>(0));
++			}
++			for (const auto& u : frame.tileUpdates) {
++				_appendU16(framesData, u.tileKey);
++				_appendU16(framesData, 0);
++				framesData.append(u.data);
++			}
++			for (const auto& u : frame.mapUpdates) {
++				_appendU16(framesData, u.mapIndex);
++				_appendU16(framesData, u.tileKey);
++				framesData.append(static_cast<char>(u.palette));
++				framesData.append(static_cast<char>(0));
++			}
++			for (const auto& u : frame.objPalUpdates) {
++				framesData.append(static_cast<char>(u.palette));
++				framesData.append(static_cast<char>(u.color));
++				framesData.append(static_cast<char>(u.gcolor));
++				framesData.append(static_cast<char>(0));
++			}
++			for (const auto& u : frame.oamUpdates) {
++				_appendU16(framesData, u.index);
++				_appendU16(framesData, 0);
++				framesData.append(static_cast<char>(u.data[0]));
++				framesData.append(static_cast<char>(u.data[1]));
++				framesData.append(static_cast<char>(u.data[2]));
++				framesData.append(static_cast<char>(u.data[3]));
++			}
++		}
++		out.append(framesData);
++	}
++	_writeU32(out, 0x0C, framesOffset);
++	_writeU32(out, 0x10, nFrames);
++	m_data = out;
++	m_framesOffset = framesOffset;
++	m_nFrames = nFrames;
++	m_framesDirty = false;
++	return true;
++}
+diff --git a/src/platform/qt/pblv/PblvDocument.h b/src/platform/qt/pblv/PblvDocument.h
+new file mode 100644
+index 000000000..e70ebfa6c
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvDocument.h
+@@ -0,0 +1,164 @@
++#pragma once
++
++#include <QtCore/QByteArray>
++#include <QtCore/QObject>
++#include <QtCore/QRect>
++#include <QtCore/QString>
++#include <QtCore/QVector>
++
++class PblvDocument : public QObject {
++	Q_OBJECT
++
++public:
++	struct PblvPalUpdate {
++		quint8 palette = 0;
++		quint8 color = 0;
++		quint8 gcolor = 0;
++	};
++	struct PblvTileUpdate {
++		quint16 tileKey = 0;
++		QByteArray data; // 64 bytes
++	};
++	struct PblvMapUpdate {
++		quint16 mapIndex = 0;
++		quint16 tileKey = 0;
++		quint8 palette = 0;
++	};
++	struct PblvOamUpdate {
++		quint16 index = 0;
++		quint8 data[4] = { 0, 0, 0, 0 };
++	};
++	struct PblvFrameRecord {
++		quint16 deltaFrames = 0;
++		QVector<PblvPalUpdate> palUpdates;
++		QVector<PblvTileUpdate> tileUpdates;
++		QVector<PblvMapUpdate> mapUpdates;
++		QVector<PblvPalUpdate> objPalUpdates;
++		QVector<PblvOamUpdate> oamUpdates;
++	};
++
++	explicit PblvDocument(QObject* parent = nullptr);
++
++	bool loadFromFile(const QString& path, QString* errorMessage = nullptr);
++	bool saveToFile(const QString& path, QString* errorMessage = nullptr);
++
++	bool isLoaded() const;
++	QString filePath() const;
++
++	quint16 mapW() const;
++	quint16 mapH() const;
++	quint16 tileCount() const;
++	quint16 bankCount() const;
++	quint16 tileW() const;
++	quint16 tileH() const;
++	quint16 tileBytesPerTile() const;
++	bool isCgb() const;
++	quint8 lcdc() const;
++	int spriteHeight() const;
++
++	// Pebble-centric tile identifier: a single index into the concatenated tile table.
++	// tileId = bank * tileCount + tileIndex
++	quint32 tileIdFromTileKey(quint16 tileKey) const;
++	bool tileKeyFromTileId(quint32 tileId, quint16* outTileKey) const;
++
++	QVector<quint8> bgPaletteBytes() const; // size 32, GColor8
++	QVector<quint8> objPaletteBytes() const; // size 32, GColor8
++	int spriteCount() const;
++	bool spriteRaw(int index, quint8* outY, quint8* outX, quint8* outTile, quint8* outAttr) const;
++	bool setSpriteRaw(int index, quint8 y, quint8 x, quint8 tile, quint8 attr);
++	bool setBgPaletteEntry(int paletteId, int colorId, quint8 gcolor);
++	bool setObjPaletteEntry(int paletteId, int colorId, quint8 gcolor);
++	quint16 mapTileKey(int x, int y) const;
++	quint8 mapPalette(int x, int y) const;
++	void setMapCell(int x, int y, quint16 tileKey, quint8 palette);
++
++	// Raw tile pixels: Pebble-packed 2bpp tiles, 16x16 (64 bytes).
++	bool tilePixels(quint16 bank, quint16 tileIndex, const quint8** outPtr) const;
++	bool setTilePixel(quint16 bank, quint16 tileIndex, int x, int y, quint8 value);
++	bool cycleTilePixels(quint16 bank, quint16 tileIndex, const QRect& rect, int delta);
++
++	int frameCount() const;
++	const PblvFrameRecord* frame(int index) const;
++	bool removeFrame(int index);
++	bool removeMapUpdate(int frameIndex, int updateIndex);
++	bool removeOamUpdate(int frameIndex, int updateIndex);
++
++	bool setPreviewFrame(int frameIndex);
++	void clearPreviewFrame();
++	QVector<int> previewAnimatedMap() const;
++	QVector<int> previewAnimatedSprites() const;
++	void setPreviewAnimatedMap(const QVector<int>& mapIndices);
++	void setPreviewAnimatedSprites(const QVector<int>& spriteIndices);
++
++signals:
++	void documentChanged();
++	void documentLoaded();
++	void framesChanged();
++
++private:
++	static bool _readU16(const QByteArray& data, int offset, quint16* out);
++	static bool _readU32(const QByteArray& data, int offset, quint32* out);
++	static void _writeU16(QByteArray& data, int offset, quint16 v);
++	static void _writeU32(QByteArray& data, int offset, quint32 v);
++	static void _appendU16(QByteArray& data, quint16 v);
++	static void _appendU32(QByteArray& data, quint32 v);
++
++	bool _parse(QString* errorMessage);
++	bool _rebuildKeyframeOffsets(QString* errorMessage);
++	bool _parseFrames(QString* errorMessage);
++	bool _syncMapIntoData(QString* errorMessage);
++	bool _syncFramesIntoData(QString* errorMessage);
++	void _applyFrameToPreview(const PblvFrameRecord& frame);
++
++	QString m_path;
++	QByteArray m_data;
++
++	quint16 m_version = 0;
++	quint16 m_headerSize = 0;
++	quint32 m_keyframeOffset = 0;
++	quint32 m_framesOffset = 0;
++	quint32 m_nFrames = 0;
++
++	quint16 m_mapW = 0;
++	quint16 m_mapH = 0;
++	quint16 m_tileCount = 0;
++	quint16 m_bankCount = 0;
++	quint8 m_tileDataSelect = 0;
++	quint8 m_lcdc = 0;
++	bool m_isCgb = false;
++
++	int m_keyframeBase = 0;
++	int m_keyframeEnd = 0;
++	int m_paletteOffset = 0;
++	int m_tileTableOffset = 0;
++	int m_mapOffset = 0;
++	int m_objPaletteOffset = 0;
++	int m_oamOffset = 0;
++	int m_mapStride = 4;
++
++	QVector<quint8> m_bgPaletteBytes;
++	QVector<quint8> m_objPaletteBytes;
++	QByteArray m_oamBytes;
++	QVector<quint16> m_mapTileKeys; // size mapW*mapH
++	QVector<quint8> m_mapPalettes; // size mapW*mapH
++
++	QVector<quint8> m_keyframeBgPaletteBytes;
++	QVector<quint8> m_keyframeObjPaletteBytes;
++	QVector<quint16> m_keyframeMapTileKeys;
++	QVector<quint8> m_keyframeMapPalettes;
++	QByteArray m_keyframeTileTable;
++	QByteArray m_keyframeOamBytes;
++
++	QVector<PblvFrameRecord> m_frames;
++	bool m_framesDirty = false;
++
++	bool m_previewActive = false;
++	QVector<quint8> m_previewBgPaletteBytes;
++	QVector<quint8> m_previewObjPaletteBytes;
++	QVector<quint16> m_previewMapTileKeys;
++	QVector<quint8> m_previewMapPalettes;
++	QByteArray m_previewTileTable;
++	QByteArray m_previewOamBytes;
++	QVector<int> m_previewAnimatedMap;
++	QVector<int> m_previewAnimatedSprites;
++};
+diff --git a/src/platform/qt/pblv/PblvMainWindow.cpp b/src/platform/qt/pblv/PblvMainWindow.cpp
+new file mode 100644
+index 000000000..4e3b404d9
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvMainWindow.cpp
+@@ -0,0 +1,207 @@
++#include "PblvMainWindow.h"
++
++#include "PblvDocument.h"
++#include "PblvFramesWindow.h"
++#include "PblvMapWindow.h"
++#include "PblvPalettesWindow.h"
++#include "PblvSpritesWindow.h"
++#include "PblvTileMapWidget.h"
++#include "PblvTilesWindow.h"
++
++#include <QtWidgets/QAction>
++#include <QtWidgets/QDockWidget>
++#include <QtWidgets/QFileDialog>
++#include <QtWidgets/QFormLayout>
++#include <QtWidgets/QLabel>
++#include <QtWidgets/QMenu>
++#include <QtWidgets/QMenuBar>
++#include <QtWidgets/QMessageBox>
++
++PblvMainWindow::PblvMainWindow(QWidget* parent)
++    : QMainWindow(parent) {
++	setWindowTitle("PBLV Editor");
++
++	m_doc = new PblvDocument(this);
++	m_view = new PblvTileMapWidget(this);
++	setCentralWidget(m_view);
++	m_view->setDocument(m_doc);
++
++	auto* info = new QWidget(this);
++	auto* form = new QFormLayout(info);
++	form->setContentsMargins(8, 8, 8, 8);
++	m_selLabel = new QLabel("(no selection)", info);
++	m_selLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
++	form->addRow("Selected", m_selLabel);
++
++	auto* dock = new QDockWidget("Map Cell", this);
++	dock->setObjectName("pblvMapCellDock");
++	dock->setWidget(info);
++	addDockWidget(Qt::RightDockWidgetArea, dock);
++
++	m_mapWindow = new PblvMapWindow();
++	m_mapWindow->setDocument(m_doc);
++	m_mapWindow->show();
++	connect(m_mapWindow, &PblvMapWindow::selectedCellChanged, this, &PblvMainWindow::onSelectedCellChanged);
++	connect(m_mapWindow, &PblvMapWindow::selectedCellsChanged, this, [this](const QVector<QPoint>& cells) {
++		if (m_view) {
++			m_view->setSelectedCells(cells);
++		}
++	});
++
++	m_tilesWindow = new PblvTilesWindow();
++	m_tilesWindow->setDocument(m_doc);
++	m_tilesWindow->show();
++
++	m_palettesWindow = new PblvPalettesWindow();
++	m_palettesWindow->setDocument(m_doc);
++	m_palettesWindow->show();
++
++	m_spritesWindow = new PblvSpritesWindow();
++	m_spritesWindow->setDocument(m_doc);
++	m_spritesWindow->show();
++	connect(m_spritesWindow, &PblvSpritesWindow::selectedSpritesChanged, this, [this](const QVector<int>& indices) {
++		if (m_view) {
++			m_view->setSelectedSprites(indices);
++		}
++	});
++
++	m_framesWindow = new PblvFramesWindow();
++	m_framesWindow->setDocument(m_doc);
++	m_framesWindow->show();
++	connect(m_framesWindow, &PblvFramesWindow::selectionChanged, this, [this](const PblvFramesModel::Selection& sel) {
++		if (!m_doc || !m_view || !m_doc->isLoaded()) {
++			return;
++		}
++		if (sel.frameIndex < 0) {
++			m_doc->clearPreviewFrame();
++			m_view->setAnimatedMapCells({});
++			m_view->setAnimatedSprites({});
++			return;
++		}
++		m_doc->setPreviewFrame(sel.frameIndex);
++		QVector<int> mapIndices;
++		QVector<int> spriteIndices;
++		const auto* frame = m_doc->frame(sel.frameIndex);
++		if (!frame) {
++			m_view->setAnimatedMapCells({});
++			m_view->setAnimatedSprites({});
++			return;
++		}
++		auto addMapForTile = [this, &mapIndices](quint16 tileKey) {
++			const int w = m_doc->mapW();
++			const int h = m_doc->mapH();
++			for (int y = 0; y < h; ++y) {
++				for (int x = 0; x < w; ++x) {
++					if (m_doc->mapTileKey(x, y) == tileKey) {
++						mapIndices.append(x + y * w);
++					}
++				}
++			}
++		};
++		if (sel.isFrame) {
++			for (const auto& u : frame->mapUpdates) {
++				mapIndices.append(u.mapIndex);
++			}
++			for (const auto& u : frame->oamUpdates) {
++				spriteIndices.append(u.index);
++			}
++			for (const auto& u : frame->tileUpdates) {
++				addMapForTile(u.tileKey);
++			}
++		} else {
++			switch (sel.updateType) {
++			case PblvFramesModel::UpdateMap:
++				if (sel.updateIndex >= 0 && sel.updateIndex < frame->mapUpdates.size()) {
++					mapIndices.append(frame->mapUpdates[sel.updateIndex].mapIndex);
++				}
++				break;
++			case PblvFramesModel::UpdateOam:
++				if (sel.updateIndex >= 0 && sel.updateIndex < frame->oamUpdates.size()) {
++					spriteIndices.append(frame->oamUpdates[sel.updateIndex].index);
++				}
++				break;
++			case PblvFramesModel::UpdateTile:
++				if (sel.updateIndex >= 0 && sel.updateIndex < frame->tileUpdates.size()) {
++					addMapForTile(frame->tileUpdates[sel.updateIndex].tileKey);
++				}
++				break;
++			default:
++				break;
++			}
++		}
++		m_view->setAnimatedMapCells(mapIndices);
++		m_view->setAnimatedSprites(spriteIndices);
++	});
++
++	QMenu* fileMenu = menuBar()->addMenu("File");
++	QAction* openAct = fileMenu->addAction("Open...");
++	QAction* saveAct = fileMenu->addAction("Save");
++	fileMenu->addSeparator();
++	QAction* exitAct = fileMenu->addAction("Exit");
++
++	connect(openAct, &QAction::triggered, this, &PblvMainWindow::openFile);
++	connect(saveAct, &QAction::triggered, this, &PblvMainWindow::saveFile);
++	connect(exitAct, &QAction::triggered, this, &QWidget::close);
++}
++
++bool PblvMainWindow::openPath(const QString& path) {
++	if (path.isEmpty()) {
++		return false;
++	}
++	QString err;
++	if (!m_doc->loadFromFile(path, &err)) {
++		_showError(err);
++		return false;
++	}
++	_setLoadedPath(path);
++	return true;
++}
++
++void PblvMainWindow::onSelectedCellChanged(int x, int y) {
++	if (!m_doc || !m_doc->isLoaded() || !m_selLabel) {
++		return;
++	}
++	const quint16 tileKey = m_doc->mapTileKey(x, y);
++	const quint8 palette = m_doc->mapPalette(x, y);
++	const quint32 tileId = m_doc->tileIdFromTileKey(tileKey);
++	m_selLabel->setText(QString("x=%1 y=%2  tileId=%3  palette=%4").arg(x).arg(y).arg(tileId).arg(palette));
++}
++
++void PblvMainWindow::_showError(const QString& message) {
++	QMessageBox::critical(this, "PBLV Editor", message);
++}
++
++void PblvMainWindow::_setLoadedPath(const QString& path) {
++	m_loadedPath = path;
++	setWindowTitle(QString("PBLV Editor - %1").arg(m_loadedPath));
++	if (m_mapWindow) {
++		m_mapWindow->setWindowTitle(QString("PBLV Map - %1").arg(m_loadedPath));
++	}
++	if (m_spritesWindow) {
++		m_spritesWindow->setWindowTitle(QString("PBLV Sprites - %1").arg(m_loadedPath));
++	}
++	if (m_framesWindow) {
++		m_framesWindow->setWindowTitle(QString("PBLV Frames - %1").arg(m_loadedPath));
++	}
++}
++
++void PblvMainWindow::openFile() {
++	const QString path =
++	    QFileDialog::getOpenFileName(this, "Open PBLV", QString(), "PBLV files (*.pblv);;All files (*)");
++	if (path.isEmpty()) {
++		return;
++	}
++	openPath(path);
++}
++
++void PblvMainWindow::saveFile() {
++	if (m_loadedPath.isEmpty()) {
++		_showError("No file loaded");
++		return;
++	}
++	QString err;
++	if (!m_doc->saveToFile(m_loadedPath, &err)) {
++		_showError(err);
++		return;
++	}
++}
+diff --git a/src/platform/qt/pblv/PblvMainWindow.h b/src/platform/qt/pblv/PblvMainWindow.h
+new file mode 100644
+index 000000000..45b113374
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvMainWindow.h
+@@ -0,0 +1,39 @@
++#pragma once
++
++#include <QtWidgets/QMainWindow>
++
++class PblvDocument;
++class PblvTileMapWidget;
++class PblvMapWindow;
++class PblvTilesWindow;
++class PblvPalettesWindow;
++class PblvSpritesWindow;
++class PblvFramesWindow;
++class QLabel;
++
++class PblvMainWindow : public QMainWindow {
++	Q_OBJECT
++
++public:
++	explicit PblvMainWindow(QWidget* parent = nullptr);
++	bool openPath(const QString& path);
++
++private slots:
++	void openFile();
++	void saveFile();
++	void onSelectedCellChanged(int x, int y);
++
++private:
++	void _setLoadedPath(const QString& path);
++	void _showError(const QString& message);
++
++	PblvDocument* m_doc = nullptr;
++	PblvTileMapWidget* m_view = nullptr;
++	PblvMapWindow* m_mapWindow = nullptr;
++	PblvTilesWindow* m_tilesWindow = nullptr;
++	PblvPalettesWindow* m_palettesWindow = nullptr;
++	PblvSpritesWindow* m_spritesWindow = nullptr;
++	PblvFramesWindow* m_framesWindow = nullptr;
++	QLabel* m_selLabel = nullptr;
++	QString m_loadedPath;
++};
+diff --git a/src/platform/qt/pblv/PblvMapModel.cpp b/src/platform/qt/pblv/PblvMapModel.cpp
+new file mode 100644
+index 000000000..699e757cf
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvMapModel.cpp
+@@ -0,0 +1,205 @@
++#include "PblvMapModel.h"
++
++#include "PblvDocument.h"
++
++#include <QtCore/QString>
++
++PblvMapModel::PblvMapModel(QObject* parent)
++    : QAbstractTableModel(parent) { }
++
++void PblvMapModel::setDocument(PblvDocument* doc) {
++	if (m_doc == doc) {
++		return;
++	}
++	beginResetModel();
++	if (m_doc) {
++		disconnect(m_doc, nullptr, this, nullptr);
++	}
++	m_doc = doc;
++	if (m_doc) {
++		connect(m_doc, &PblvDocument::documentChanged, this, &PblvMapModel::_onDocChanged);
++		connect(m_doc, &PblvDocument::documentLoaded, this, &PblvMapModel::_onDocLoaded);
++	}
++	endResetModel();
++}
++
++PblvDocument* PblvMapModel::document() const {
++	return m_doc;
++}
++
++int PblvMapModel::rowCount(const QModelIndex& parent) const {
++	if (parent.isValid() || !m_doc || !m_doc->isLoaded()) {
++		return 0;
++	}
++	return m_doc->mapH();
++}
++
++int PblvMapModel::columnCount(const QModelIndex& parent) const {
++	if (parent.isValid() || !m_doc || !m_doc->isLoaded()) {
++		return 0;
++	}
++	return m_doc->mapW();
++}
++
++QVariant PblvMapModel::data(const QModelIndex& index, int role) const {
++	if (!m_doc || !m_doc->isLoaded() || !index.isValid()) {
++		return {};
++	}
++	const int x = index.column();
++	const int y = index.row();
++	if (x < 0 || y < 0 || x >= m_doc->mapW() || y >= m_doc->mapH()) {
++		return {};
++	}
++	const quint16 tileKey = m_doc->mapTileKey(x, y);
++	const quint8 pal = m_doc->mapPalette(x, y);
++
++	if (role == Qt::DisplayRole || role == Qt::EditRole) {
++		return _formatCellText(tileKey, pal);
++	}
++	if (role == Qt::ToolTipRole) {
++		const quint32 tileId = m_doc->tileIdFromTileKey(tileKey);
++		return QString("tileId=%1, palette=%2").arg(tileId).arg(pal);
++	}
++
++	return {};
++}
++
++bool PblvMapModel::setData(const QModelIndex& index, const QVariant& value, int role) {
++	if (!m_doc || !m_doc->isLoaded() || !index.isValid() || role != Qt::EditRole) {
++		return false;
++	}
++	const int x = index.column();
++	const int y = index.row();
++	if (x < 0 || y < 0 || x >= m_doc->mapW() || y >= m_doc->mapH()) {
++		return false;
++	}
++
++	const QString text = value.toString();
++	quint16 tileKey = 0;
++	bool hasPalette = false;
++	quint8 palette = 0;
++	if (!_parseCellText(text, &tileKey, &hasPalette, &palette)) {
++		return false;
++	}
++	if (!hasPalette) {
++		palette = m_doc->mapPalette(x, y);
++	}
++	m_doc->setMapCell(x, y, tileKey, palette);
++	emit dataChanged(index, index, { Qt::DisplayRole, Qt::EditRole, Qt::ToolTipRole });
++	return true;
++}
++
++Qt::ItemFlags PblvMapModel::flags(const QModelIndex& index) const {
++	if (!index.isValid()) {
++		return Qt::NoItemFlags;
++	}
++	return Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsEditable;
++}
++
++void PblvMapModel::_onDocChanged() {
++	if (!m_doc || !m_doc->isLoaded()) {
++		return;
++	}
++	const QModelIndex tl = this->index(0, 0);
++	const QModelIndex br = this->index(m_doc->mapH() - 1, m_doc->mapW() - 1);
++	emit dataChanged(tl, br, { Qt::DisplayRole, Qt::EditRole, Qt::ToolTipRole });
++}
++
++void PblvMapModel::_onDocLoaded() {
++	beginResetModel();
++	endResetModel();
++}
++
++QString PblvMapModel::_formatCellText(quint16 tileKey, quint8 palette) const {
++	if (!m_doc || !m_doc->isLoaded()) {
++		return QString("T? P%1").arg(palette & 7);
++	}
++	const quint32 tileId = m_doc->tileIdFromTileKey(tileKey);
++	return QString("T%1 P%2").arg(tileId).arg(palette & 7);
++}
++
++bool PblvMapModel::_parseCellText(const QString& text, quint16* outTileKey, bool* outHasPalette,
++                                  quint8* outPalette) const {
++	if (!m_doc || !m_doc->isLoaded() || !outTileKey || !outHasPalette || !outPalette) {
++		return false;
++	}
++	*outHasPalette = false;
++	*outTileKey = 0;
++	*outPalette = 0;
++
++	QString t = text.trimmed();
++	if (t.isEmpty()) {
++		return false;
++	}
++
++	QString tilePart;
++	QString palPart;
++
++	int sep = t.indexOf(QLatin1Char(':'));
++	if (sep < 0) {
++		sep = t.indexOf(QLatin1Char(','));
++	}
++	if (sep < 0) {
++		sep = t.indexOf(QLatin1Char(' '));
++	}
++
++	if (sep >= 0) {
++		tilePart = t.left(sep).trimmed();
++		palPart = t.mid(sep + 1).trimmed();
++		*outHasPalette = !palPart.isEmpty();
++	} else {
++		tilePart = t;
++		*outHasPalette = false;
++	}
++
++	bool ok = false;
++	quint16 tileKey = 0;
++
++	// Preferred syntax: T<tileId>
++	QString tp = tilePart;
++	if (tp.startsWith('T', Qt::CaseInsensitive)) {
++		tp = tp.mid(1).trimmed();
++	}
++	if (tilePart.startsWith('T', Qt::CaseInsensitive) || tilePart.startsWith('t', Qt::CaseInsensitive)) {
++		const quint32 tileId = tp.toUInt(&ok, 10);
++		if (!ok) {
++			return false;
++		}
++		if (!m_doc->tileKeyFromTileId(tileId, &tileKey)) {
++			return false;
++		}
++	} else {
++		// Legacy syntax: raw tileKey (hex or decimal)
++		quint32 raw = 0;
++		if (tilePart.startsWith("0x", Qt::CaseInsensitive)) {
++			raw = tilePart.toUInt(&ok, 16);
++		} else {
++			raw = tilePart.toUInt(&ok, 10);
++		}
++		if (!ok || raw > 0xFFFFu) {
++			return false;
++		}
++		tileKey = static_cast<quint16>(raw);
++	}
++
++	quint32 pal = 0;
++	if (*outHasPalette) {
++		QString pp = palPart;
++		if (pp.startsWith('P', Qt::CaseInsensitive)) {
++			pp = pp.mid(1).trimmed();
++		}
++		pal = pp.toUInt(&ok, 10);
++		if (!ok) {
++			if (palPart.startsWith("0x", Qt::CaseInsensitive)) {
++				pal = palPart.toUInt(&ok, 16);
++			}
++		}
++		if (!ok || pal > 0xFFu) {
++			return false;
++		}
++	}
++
++	*outTileKey = tileKey;
++	*outPalette = static_cast<quint8>(pal & 7);
++	return true;
++}
+diff --git a/src/platform/qt/pblv/PblvMapModel.h b/src/platform/qt/pblv/PblvMapModel.h
+new file mode 100644
+index 000000000..889de1e7b
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvMapModel.h
+@@ -0,0 +1,31 @@
++#pragma once
++
++#include <QtCore/QAbstractTableModel>
++
++class PblvDocument;
++
++class PblvMapModel : public QAbstractTableModel {
++	Q_OBJECT
++
++public:
++	explicit PblvMapModel(QObject* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++	PblvDocument* document() const;
++
++	int rowCount(const QModelIndex& parent = QModelIndex()) const override;
++	int columnCount(const QModelIndex& parent = QModelIndex()) const override;
++	QVariant data(const QModelIndex& index, int role) const override;
++	bool setData(const QModelIndex& index, const QVariant& value, int role) override;
++	Qt::ItemFlags flags(const QModelIndex& index) const override;
++
++private slots:
++	void _onDocChanged();
++	void _onDocLoaded();
++
++private:
++	bool _parseCellText(const QString& text, quint16* outTileKey, bool* outHasPalette, quint8* outPalette) const;
++	QString _formatCellText(quint16 tileKey, quint8 palette) const;
++
++	PblvDocument* m_doc = nullptr;
++};
+diff --git a/src/platform/qt/pblv/PblvMapWindow.cpp b/src/platform/qt/pblv/PblvMapWindow.cpp
+new file mode 100644
+index 000000000..ba320b200
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvMapWindow.cpp
+@@ -0,0 +1,234 @@
++#include "PblvMapWindow.h"
++
++#include "PblvMapModel.h"
++
++#include <QtGui/QClipboard>
++#include <QtGui/QGuiApplication>
++#include <QtGui/QKeySequence>
++
++#include <QtWidgets/QAction>
++#include <QtWidgets/QHeaderView>
++#include <QtWidgets/QLineEdit>
++#include <QtWidgets/QStyledItemDelegate>
++#include <QtWidgets/QTableView>
++
++#include <QtCore/QItemSelectionModel>
++#include <QtCore/QRect>
++#include <QtCore/QRegExp>
++#include <QtCore/QSet>
++#include <QtCore/QStringList>
++
++namespace {
++class PblvMultiEditDelegate : public QStyledItemDelegate {
++public:
++	explicit PblvMultiEditDelegate(QTableView* view)
++	    : QStyledItemDelegate(view)
++	    , m_view(view) { }
++
++	QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
++	                      const QModelIndex& index) const override {
++		Q_UNUSED(option);
++		Q_UNUSED(index);
++		auto* e = new QLineEdit(parent);
++		e->setFrame(false);
++		return e;
++	}
++
++	void setEditorData(QWidget* editor, const QModelIndex& index) const override {
++		auto* e = qobject_cast<QLineEdit*>(editor);
++		if (!e) {
++			return;
++		}
++		e->setText(index.data(Qt::EditRole).toString());
++	}
++
++	void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override {
++		auto* e = qobject_cast<QLineEdit*>(editor);
++		if (!e || !m_view || !m_view->selectionModel()) {
++			QStyledItemDelegate::setModelData(editor, model, index);
++			return;
++		}
++		const QString text = e->text();
++		const QModelIndexList selected = m_view->selectionModel()->selectedIndexes();
++		if (selected.isEmpty()) {
++			model->setData(index, text, Qt::EditRole);
++			return;
++		}
++		for (const QModelIndex& idx : selected) {
++			model->setData(idx, text, Qt::EditRole);
++		}
++	}
++
++private:
++	QTableView* m_view = nullptr;
++};
++} // namespace
++
++PblvMapWindow::PblvMapWindow(QWidget* parent)
++    : QMainWindow(parent) {
++	setWindowTitle("PBLV Map");
++
++	m_view = new QTableView(this);
++	m_model = new PblvMapModel(this);
++	m_delegate = new PblvMultiEditDelegate(m_view);
++
++	m_view->setModel(m_model);
++	m_view->setItemDelegate(m_delegate);
++	m_view->setSelectionMode(QAbstractItemView::ExtendedSelection);
++	m_view->setSelectionBehavior(QAbstractItemView::SelectItems);
++	m_view->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
++	                        QAbstractItemView::AnyKeyPressed);
++	m_view->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++	m_view->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++
++	auto* copyAction = new QAction(this);
++	copyAction->setShortcut(QKeySequence::Copy);
++	copyAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
++	addAction(copyAction);
++	connect(copyAction, &QAction::triggered, this, &PblvMapWindow::_copySelection);
++
++	auto* pasteAction = new QAction(this);
++	pasteAction->setShortcut(QKeySequence::Paste);
++	pasteAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
++	addAction(pasteAction);
++	connect(pasteAction, &QAction::triggered, this, &PblvMapWindow::_pasteSelection);
++
++	setCentralWidget(m_view);
++
++	if (m_view->selectionModel()) {
++		connect(m_view->selectionModel(), &QItemSelectionModel::selectionChanged, this,
++		        [this](const QItemSelection&, const QItemSelection&) {
++			        const QModelIndexList selected = m_view->selectionModel()->selectedIndexes();
++			        QVector<QPoint> cells;
++			        cells.reserve(selected.size());
++			        QSet<quint32> seen;
++			        for (const QModelIndex& idx : selected) {
++				        if (!idx.isValid()) {
++					        continue;
++				        }
++				        const quint32 key =
++				            (static_cast<quint32>(idx.row()) << 16) | static_cast<quint32>(idx.column());
++				        if (seen.contains(key)) {
++					        continue;
++				        }
++				        seen.insert(key);
++				        cells.append(QPoint(idx.column(), idx.row()));
++			        }
++			        emit selectedCellsChanged(cells);
++		        });
++
++		connect(m_view->selectionModel(), &QItemSelectionModel::currentChanged, this,
++		        [this](const QModelIndex& current, const QModelIndex&) {
++			        if (!current.isValid()) {
++				        return;
++			        }
++			        emit selectedCellChanged(current.column(), current.row());
++		        });
++	}
++}
++
++void PblvMapWindow::setDocument(PblvDocument* doc) {
++	m_model->setDocument(doc);
++}
++
++PblvMapModel* PblvMapWindow::model() const {
++	return m_model;
++}
++
++QRect PblvMapWindow::_selectionBounds() const {
++	if (!m_view || !m_view->selectionModel()) {
++		return {};
++	}
++	const QModelIndexList selected = m_view->selectionModel()->selectedIndexes();
++	if (selected.isEmpty()) {
++		return {};
++	}
++	int minRow = selected.first().row();
++	int maxRow = minRow;
++	int minCol = selected.first().column();
++	int maxCol = minCol;
++	for (const QModelIndex& idx : selected) {
++		if (!idx.isValid()) {
++			continue;
++		}
++		minRow = qMin(minRow, idx.row());
++		maxRow = qMax(maxRow, idx.row());
++		minCol = qMin(minCol, idx.column());
++		maxCol = qMax(maxCol, idx.column());
++	}
++	return QRect(minCol, minRow, (maxCol - minCol) + 1, (maxRow - minRow) + 1);
++}
++
++void PblvMapWindow::_copySelection() {
++	if (!m_model || !m_view || !m_view->selectionModel()) {
++		return;
++	}
++	const QRect bounds = _selectionBounds();
++	if (!bounds.isValid()) {
++		return;
++	}
++	QStringList lines;
++	lines.reserve(bounds.height());
++	for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
++		QStringList cols;
++		cols.reserve(bounds.width());
++		for (int x = bounds.left(); x <= bounds.right(); ++x) {
++			const QModelIndex idx = m_model->index(y, x);
++			cols.append(m_model->data(idx, Qt::EditRole).toString());
++		}
++		lines.append(cols.join(QLatin1Char('\t')));
++	}
++	QClipboard* cb = QGuiApplication::clipboard();
++	if (cb) {
++		cb->setText(lines.join(QLatin1Char('\n')));
++	}
++}
++
++void PblvMapWindow::_pasteSelection() {
++	if (!m_model || !m_view) {
++		return;
++	}
++	QClipboard* cb = QGuiApplication::clipboard();
++	if (!cb) {
++		return;
++	}
++	const QString text = cb->text();
++	if (text.trimmed().isEmpty()) {
++		return;
++	}
++
++	QModelIndex anchor = m_view->currentIndex();
++	if (!anchor.isValid()) {
++		const QRect bounds = _selectionBounds();
++		if (bounds.isValid()) {
++			anchor = m_model->index(bounds.top(), bounds.left());
++		}
++	}
++	if (!anchor.isValid()) {
++		return;
++	}
++
++	const QStringList rows = text.split(QRegExp("\\r?\\n"), Qt::SkipEmptyParts);
++	if (rows.isEmpty()) {
++		return;
++	}
++	const int startRow = anchor.row();
++	const int startCol = anchor.column();
++
++	for (int r = 0; r < rows.size(); ++r) {
++		const QStringList cols = rows[r].split(QLatin1Char('\t'));
++		for (int c = 0; c < cols.size(); ++c) {
++			const int row = startRow + r;
++			const int col = startCol + c;
++			const QModelIndex idx = m_model->index(row, col);
++			if (!idx.isValid()) {
++				continue;
++			}
++			const QString cell = cols[c].trimmed();
++			if (cell.isEmpty()) {
++				continue;
++			}
++			m_model->setData(idx, cell, Qt::EditRole);
++		}
++	}
++}
+diff --git a/src/platform/qt/pblv/PblvMapWindow.h b/src/platform/qt/pblv/PblvMapWindow.h
+new file mode 100644
+index 000000000..bc4be8121
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvMapWindow.h
+@@ -0,0 +1,34 @@
++#pragma once
++
++#include <QtWidgets/QMainWindow>
++
++#include <QtCore/QPoint>
++#include <QtCore/QVector>
++
++class PblvMapModel;
++class PblvDocument;
++class QTableView;
++class QStyledItemDelegate;
++
++class PblvMapWindow : public QMainWindow {
++	Q_OBJECT
++
++public:
++	explicit PblvMapWindow(QWidget* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++	PblvMapModel* model() const;
++
++signals:
++	void selectedCellChanged(int x, int y);
++	void selectedCellsChanged(const QVector<QPoint>& cells);
++
++private:
++	QRect _selectionBounds() const;
++	void _copySelection();
++	void _pasteSelection();
++
++	QTableView* m_view = nullptr;
++	PblvMapModel* m_model = nullptr;
++	QStyledItemDelegate* m_delegate = nullptr;
++};
+diff --git a/src/platform/qt/pblv/PblvPalettesModel.cpp b/src/platform/qt/pblv/PblvPalettesModel.cpp
+new file mode 100644
+index 000000000..b041f6b77
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvPalettesModel.cpp
+@@ -0,0 +1,94 @@
++#include "PblvPalettesModel.h"
++
++#include "PblvDocument.h"
++
++#include <QtGui/QBrush>
++
++PblvPalettesModel::PblvPalettesModel(QObject* parent)
++    : QAbstractTableModel(parent) { }
++
++void PblvPalettesModel::setDocument(PblvDocument* doc) {
++	if (m_doc == doc) {
++		return;
++	}
++	beginResetModel();
++	if (m_doc) {
++		disconnect(m_doc, nullptr, this, nullptr);
++	}
++	m_doc = doc;
++	if (m_doc) {
++		connect(m_doc, &PblvDocument::documentChanged, this, &PblvPalettesModel::_onDocChanged);
++		connect(m_doc, &PblvDocument::documentLoaded, this, &PblvPalettesModel::_onDocLoaded);
++	}
++	endResetModel();
++}
++
++int PblvPalettesModel::rowCount(const QModelIndex& parent) const {
++	if (parent.isValid() || !m_doc || !m_doc->isLoaded()) {
++		return 0;
++	}
++	return 16;
++}
++
++int PblvPalettesModel::columnCount(const QModelIndex& parent) const {
++	if (parent.isValid() || !m_doc || !m_doc->isLoaded()) {
++		return 0;
++	}
++	return 4;
++}
++
++QColor PblvPalettesModel::_qcolorFromGColor8(quint8 g) {
++	const int a2 = (g >> 6) & 3;
++	const int r2 = (g >> 4) & 3;
++	const int g2 = (g >> 2) & 3;
++	const int b2 = (g >> 0) & 3;
++	return QColor(r2 * 85, g2 * 85, b2 * 85, a2 * 85);
++}
++
++QVariant PblvPalettesModel::data(const QModelIndex& index, int role) const {
++	if (!m_doc || !m_doc->isLoaded() || !index.isValid()) {
++		return {};
++	}
++	const int palId = index.row();
++	const int colorId = index.column();
++	const bool isObj = palId >= 8;
++	const int palIndex = isObj ? (palId - 8) : palId;
++	const QVector<quint8> bytes = isObj ? m_doc->objPaletteBytes() : m_doc->bgPaletteBytes();
++	const int idx = palIndex * 4 + colorId;
++	if (idx < 0 || idx >= bytes.size()) {
++		return {};
++	}
++	const quint8 g = bytes[idx];
++
++	if (role == Qt::DisplayRole || role == Qt::ToolTipRole) {
++		return QString("0x%1").arg(g, 2, 16, QLatin1Char('0')).toUpper();
++	}
++	if (role == Qt::BackgroundRole) {
++		return QBrush(_qcolorFromGColor8(g));
++	}
++	return {};
++}
++
++QVariant PblvPalettesModel::headerData(int section, Qt::Orientation orientation, int role) const {
++	if (role != Qt::DisplayRole) {
++		return {};
++	}
++	if (orientation == Qt::Vertical) {
++		return (section < 8) ? QString("BG%1").arg(section) : QString("OBJ%1").arg(section - 8);
++	}
++	return QString("C%1").arg(section);
++}
++
++void PblvPalettesModel::_onDocChanged() {
++	if (!m_doc || !m_doc->isLoaded()) {
++		return;
++	}
++	const QModelIndex tl = this->index(0, 0);
++	const QModelIndex br = this->index(rowCount() - 1, columnCount() - 1);
++	emit dataChanged(tl, br, { Qt::DisplayRole, Qt::ToolTipRole, Qt::BackgroundRole });
++}
++
++void PblvPalettesModel::_onDocLoaded() {
++	beginResetModel();
++	endResetModel();
++}
+diff --git a/src/platform/qt/pblv/PblvPalettesModel.h b/src/platform/qt/pblv/PblvPalettesModel.h
+new file mode 100644
+index 000000000..1770afa5b
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvPalettesModel.h
+@@ -0,0 +1,28 @@
++#pragma once
++
++#include <QtCore/QAbstractTableModel>
++
++class PblvDocument;
++
++class PblvPalettesModel : public QAbstractTableModel {
++	Q_OBJECT
++
++public:
++	explicit PblvPalettesModel(QObject* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++
++	int rowCount(const QModelIndex& parent = QModelIndex()) const override;
++	int columnCount(const QModelIndex& parent = QModelIndex()) const override;
++	QVariant data(const QModelIndex& index, int role) const override;
++	QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
++
++private slots:
++	void _onDocChanged();
++	void _onDocLoaded();
++
++private:
++	static QColor _qcolorFromGColor8(quint8 g);
++
++	PblvDocument* m_doc = nullptr;
++};
+diff --git a/src/platform/qt/pblv/PblvPalettesWindow.cpp b/src/platform/qt/pblv/PblvPalettesWindow.cpp
+new file mode 100644
+index 000000000..7bff3187f
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvPalettesWindow.cpp
+@@ -0,0 +1,247 @@
++#include "PblvPalettesWindow.h"
++
++#include "PblvDocument.h"
++#include "PblvPalettesModel.h"
++
++#include <QtGui/QPainter>
++#include <QtWidgets/QHeaderView>
++#include <QtWidgets/QLabel>
++#include <QtWidgets/QSlider>
++#include <QtWidgets/QStyledItemDelegate>
++#include <QtWidgets/QTableView>
++#include <QtWidgets/QVBoxLayout>
++#include <QtWidgets/QWidget>
++
++namespace {
++class PblvPaletteSelectionDelegate final : public QStyledItemDelegate {
++public:
++	explicit PblvPaletteSelectionDelegate(QObject* parent = nullptr)
++	    : QStyledItemDelegate(parent) { }
++
++	void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
++		QStyledItemDelegate::paint(painter, option, index);
++		if (!(option.state & QStyle::State_Selected)) {
++			return;
++		}
++		QColor bg;
++		QVariant v = index.data(Qt::BackgroundRole);
++		if (v.canConvert<QBrush>()) {
++			bg = v.value<QBrush>().color();
++		}
++		const int y = (bg.red() * 299 + bg.green() * 587 + bg.blue() * 114) / 1000;
++		const QColor border = (y < 128) ? QColor(255, 255, 255) : QColor(0, 0, 0);
++		QPen pen(border);
++		pen.setCosmetic(true);
++		pen.setWidth(2);
++		painter->save();
++		painter->setPen(pen);
++		painter->setBrush(Qt::NoBrush);
++		painter->drawRect(option.rect.adjusted(1, 1, -2, -2));
++		painter->restore();
++	}
++};
++
++QSlider* _make2BitSlider(QWidget* parent, const QString& name) {
++	QSlider* s = new QSlider(Qt::Horizontal, parent);
++	s->setObjectName(name);
++	s->setRange(0, 3);
++	s->setSingleStep(1);
++	s->setPageStep(1);
++	s->setTickInterval(1);
++	s->setTickPosition(QSlider::TicksBelow);
++	return s;
++}
++} // namespace
++
++PblvPalettesWindow::PblvPalettesWindow(QWidget* parent)
++    : QMainWindow(parent) {
++	setWindowTitle("PBLV Palettes");
++
++	QWidget* root = new QWidget(this);
++	QHBoxLayout* row = new QHBoxLayout(root);
++	row->setContentsMargins(8, 8, 8, 8);
++	row->setSpacing(8);
++
++	m_view = new QTableView(root);
++	m_model = new PblvPalettesModel(this);
++	m_view->setModel(m_model);
++	m_view->setSelectionMode(QAbstractItemView::ExtendedSelection);
++	m_view->setSelectionBehavior(QAbstractItemView::SelectItems);
++	m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
++	m_view->setItemDelegate(new PblvPaletteSelectionDelegate(m_view));
++	m_view->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++	m_view->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++	row->addWidget(m_view, 1);
++
++	QWidget* panel = new QWidget(root);
++	QVBoxLayout* col = new QVBoxLayout(panel);
++	col->setContentsMargins(0, 0, 0, 0);
++	col->setSpacing(6);
++
++	col->addWidget(new QLabel("Selected color (2-bit per channel):", panel));
++
++	col->addWidget(new QLabel("A", panel));
++	m_a = _make2BitSlider(panel, "pblvA");
++	col->addWidget(m_a);
++
++	col->addWidget(new QLabel("R", panel));
++	m_r = _make2BitSlider(panel, "pblvR");
++	col->addWidget(m_r);
++
++	col->addWidget(new QLabel("G", panel));
++	m_g = _make2BitSlider(panel, "pblvG");
++	col->addWidget(m_g);
++
++	col->addWidget(new QLabel("B", panel));
++	m_b = _make2BitSlider(panel, "pblvB");
++	col->addWidget(m_b);
++
++	m_info = new QLabel(panel);
++	m_info->setWordWrap(true);
++	col->addWidget(m_info);
++	col->addStretch(1);
++
++	row->addWidget(panel, 0);
++	setCentralWidget(root);
++
++	connect(m_a, &QSlider::valueChanged, this, &PblvPalettesWindow::_onSliderChanged);
++	connect(m_r, &QSlider::valueChanged, this, &PblvPalettesWindow::_onSliderChanged);
++	connect(m_g, &QSlider::valueChanged, this, &PblvPalettesWindow::_onSliderChanged);
++	connect(m_b, &QSlider::valueChanged, this, &PblvPalettesWindow::_onSliderChanged);
++
++	_setSlidersEnabled(false);
++	_updateInfoLabel();
++}
++
++void PblvPalettesWindow::setDocument(PblvDocument* doc) {
++	m_doc = doc;
++	m_model->setDocument(doc);
++	if (m_view->selectionModel()) {
++		disconnect(m_view->selectionModel(), nullptr, this, nullptr);
++	}
++	if (m_view->selectionModel()) {
++		connect(m_view->selectionModel(), &QItemSelectionModel::currentChanged, this,
++		        &PblvPalettesWindow::_onCurrentChanged);
++	}
++	m_current = QPersistentModelIndex();
++	_setSlidersEnabled(false);
++	_updateInfoLabel();
++}
++
++void PblvPalettesWindow::_onCurrentChanged(const QModelIndex& current, const QModelIndex& previous) {
++	Q_UNUSED(previous);
++	m_current = QPersistentModelIndex(current);
++	_syncSlidersFromCurrent();
++}
++
++void PblvPalettesWindow::_onSliderChanged() {
++	if (m_updatingUi) {
++		return;
++	}
++	if (!m_doc || !m_doc->isLoaded() || !m_current.isValid()) {
++		_updateInfoLabel();
++		return;
++	}
++	const int palRow = m_current.row();
++	const bool isObj = palRow >= 8;
++	const int palId = isObj ? (palRow - 8) : palRow;
++	const int colorId = m_current.column();
++	const quint8 g = _gcolor8FromA2R2G2B2(m_a->value(), m_r->value(), m_g->value(), m_b->value());
++	if (isObj) {
++		(void) m_doc->setObjPaletteEntry(palId, colorId, g);
++	} else {
++		(void) m_doc->setBgPaletteEntry(palId, colorId, g);
++	}
++	_updateInfoLabel();
++}
++
++void PblvPalettesWindow::_setSlidersEnabled(bool enabled) {
++	m_a->setEnabled(enabled);
++	m_r->setEnabled(enabled);
++	m_g->setEnabled(enabled);
++	m_b->setEnabled(enabled);
++}
++
++void PblvPalettesWindow::_syncSlidersFromCurrent() {
++	if (!m_doc || !m_doc->isLoaded() || !m_current.isValid()) {
++		_setSlidersEnabled(false);
++		_updateInfoLabel();
++		return;
++	}
++	const int palRow = m_current.row();
++	const bool isObj = palRow >= 8;
++	const int palId = isObj ? (palRow - 8) : palRow;
++	const int colorId = m_current.column();
++	const QVector<quint8> bytes = isObj ? m_doc->objPaletteBytes() : m_doc->bgPaletteBytes();
++	const int idx = palId * 4 + colorId;
++	if (idx < 0 || idx >= bytes.size()) {
++		_setSlidersEnabled(false);
++		_updateInfoLabel();
++		return;
++	}
++	const quint8 g = bytes[idx];
++
++	m_updatingUi = true;
++	_setSlidersEnabled(true);
++	m_a->setValue(_a2FromGColor8(g));
++	m_r->setValue(_r2FromGColor8(g));
++	m_g->setValue(_g2FromGColor8(g));
++	m_b->setValue(_b2FromGColor8(g));
++	m_updatingUi = false;
++	_updateInfoLabel();
++}
++
++void PblvPalettesWindow::_updateInfoLabel() {
++	if (!m_doc || !m_doc->isLoaded() || !m_current.isValid()) {
++		m_info->setText("Select a palette cell to edit.");
++		return;
++	}
++	const int palRow = m_current.row();
++	const bool isObj = palRow >= 8;
++	const int palId = isObj ? (palRow - 8) : palRow;
++	const int colorId = m_current.column();
++	const quint8 g = _gcolor8FromA2R2G2B2(m_a->value(), m_r->value(), m_g->value(), m_b->value());
++	const int a = _to8(m_a->value());
++	const int r = _to8(m_r->value());
++	const int gg = _to8(m_g->value());
++	const int b = _to8(m_b->value());
++	const QString prefix = isObj ? QString("OBJ") : QString("BG");
++	m_info->setText(QString("%1%2 C%3\nGColor8=0x%4\nARGB8=(%5,%6,%7,%8)")
++	                    .arg(prefix)
++	                    .arg(palId)
++	                    .arg(colorId)
++	                    .arg(g, 2, 16, QLatin1Char('0'))
++	                    .arg(a)
++	                    .arg(r)
++	                    .arg(gg)
++	                    .arg(b)
++	                    .toUpper());
++}
++
++int PblvPalettesWindow::_a2FromGColor8(quint8 g) {
++	return (g >> 6) & 3;
++}
++
++int PblvPalettesWindow::_r2FromGColor8(quint8 g) {
++	return (g >> 4) & 3;
++}
++
++int PblvPalettesWindow::_g2FromGColor8(quint8 g) {
++	return (g >> 2) & 3;
++}
++
++int PblvPalettesWindow::_b2FromGColor8(quint8 g) {
++	return (g >> 0) & 3;
++}
++
++quint8 PblvPalettesWindow::_gcolor8FromA2R2G2B2(int a2, int r2, int g2, int b2) {
++	a2 &= 3;
++	r2 &= 3;
++	g2 &= 3;
++	b2 &= 3;
++	return static_cast<quint8>((a2 << 6) | (r2 << 4) | (g2 << 2) | (b2 << 0));
++}
++
++int PblvPalettesWindow::_to8(int v2) {
++	return (v2 & 3) * 85;
++}
+diff --git a/src/platform/qt/pblv/PblvPalettesWindow.h b/src/platform/qt/pblv/PblvPalettesWindow.h
+new file mode 100644
+index 000000000..4ea4c5452
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvPalettesWindow.h
+@@ -0,0 +1,48 @@
++#pragma once
++
++#include <QtWidgets/QMainWindow>
++
++#include <QtCore/QPersistentModelIndex>
++
++class PblvDocument;
++class PblvPalettesModel;
++class QTableView;
++class QLabel;
++class QSlider;
++
++class PblvPalettesWindow : public QMainWindow {
++	Q_OBJECT
++
++public:
++	explicit PblvPalettesWindow(QWidget* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++
++private slots:
++	void _onCurrentChanged(const QModelIndex& current, const QModelIndex& previous);
++	void _onSliderChanged();
++
++private:
++	void _setSlidersEnabled(bool enabled);
++	void _syncSlidersFromCurrent();
++	void _updateInfoLabel();
++
++	static int _a2FromGColor8(quint8 g);
++	static int _r2FromGColor8(quint8 g);
++	static int _g2FromGColor8(quint8 g);
++	static int _b2FromGColor8(quint8 g);
++	static quint8 _gcolor8FromA2R2G2B2(int a2, int r2, int g2, int b2);
++	static int _to8(int v2);
++
++	QTableView* m_view = nullptr;
++	PblvPalettesModel* m_model = nullptr;
++	PblvDocument* m_doc = nullptr;
++
++	QPersistentModelIndex m_current;
++	QSlider* m_a = nullptr;
++	QSlider* m_r = nullptr;
++	QSlider* m_g = nullptr;
++	QSlider* m_b = nullptr;
++	QLabel* m_info = nullptr;
++	bool m_updatingUi = false;
++};
+diff --git a/src/platform/qt/pblv/PblvTileMapWidget.cpp b/src/platform/qt/pblv/PblvTileMapWidget.cpp
+new file mode 100644
+index 000000000..5d1240b88
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvTileMapWidget.cpp
+@@ -0,0 +1,349 @@
++#include "PblvTileMapWidget.h"
++
++#include "PblvDocument.h"
++
++#include <QtGui/QPainter>
++#include <QtMath>
++
++PblvTileMapWidget::PblvTileMapWidget(QWidget* parent)
++    : QWidget(parent) {
++	setMinimumSize(QSize(160, 144));
++	setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
++}
++
++void PblvTileMapWidget::setDocument(PblvDocument* doc) {
++	if (m_doc == doc) {
++		return;
++	}
++	if (m_doc) {
++		disconnect(m_doc, nullptr, this, nullptr);
++	}
++	m_doc = doc;
++	if (m_doc) {
++		connect(m_doc, &PblvDocument::documentChanged, this, &PblvTileMapWidget::_rebuildImage);
++		connect(m_doc, &PblvDocument::documentLoaded, this, &PblvTileMapWidget::_rebuildImage);
++	}
++	_rebuildImage();
++}
++
++void PblvTileMapWidget::setSelectedCells(const QVector<QPoint>& cells) {
++	m_selectedCells = cells;
++	update();
++}
++
++void PblvTileMapWidget::setSelectedSprites(const QVector<int>& indices) {
++	m_selectedSprites = indices;
++	update();
++}
++
++void PblvTileMapWidget::setAnimatedMapCells(const QVector<int>& mapIndices) {
++	m_animatedMap = mapIndices;
++	update();
++}
++
++void PblvTileMapWidget::setAnimatedSprites(const QVector<int>& spriteIndices) {
++	m_animatedSprites = spriteIndices;
++	update();
++}
++
++QSize PblvTileMapWidget::sizeHint() const {
++	if (!m_doc || !m_doc->isLoaded()) {
++		return QSize(160, 144);
++	}
++	return QSize(m_doc->mapW() * m_doc->tileW(), m_doc->mapH() * m_doc->tileH());
++}
++
++QRgb PblvTileMapWidget::_colorFromGColor8(quint8 g) {
++	const int a2 = (g >> 6) & 3;
++	const int r2 = (g >> 4) & 3;
++	const int g2 = (g >> 2) & 3;
++	const int b2 = (g >> 0) & 3;
++	const int a = a2 * 85;
++	const int r = r2 * 85;
++	const int gg = g2 * 85;
++	const int b = b2 * 85;
++	return qRgba(r, gg, b, a);
++}
++
++void PblvTileMapWidget::_rebuildImage() {
++	if (!m_doc || !m_doc->isLoaded()) {
++		m_image = QImage();
++		m_spriteImage = QImage();
++		update();
++		return;
++	}
++
++	const int tileW = m_doc->tileW();
++	const int tileH = m_doc->tileH();
++	const int bytesPerRow = tileW / 4;
++	const int w = m_doc->mapW() * tileW;
++	const int h = m_doc->mapH() * tileH;
++	QImage img(w, h, QImage::Format_ARGB32);
++	img.fill(qRgba(0, 0, 0, 255));
++
++	const QVector<quint8> pal = m_doc->bgPaletteBytes();
++	const auto colorAt = [&](quint8 paletteId, quint8 colorId) -> QRgb {
++		const int idx = (paletteId & 7) * 4 + (colorId & 3);
++		if (idx < 0 || idx >= pal.size()) {
++			return qRgba(0, 0, 0, 255);
++		}
++		return _colorFromGColor8(pal[idx]);
++	};
++
++	for (int my = 0; my < m_doc->mapH(); ++my) {
++		for (int mx = 0; mx < m_doc->mapW(); ++mx) {
++			const quint16 tileKey = m_doc->mapTileKey(mx, my);
++			const quint8 paletteId = m_doc->mapPalette(mx, my);
++			const quint16 bank = (tileKey >> 15) & 1;
++			const quint16 tileIndex = tileKey & 0x7FFF;
++
++			const quint8* tile = nullptr;
++			if (!m_doc->tilePixels(bank, tileIndex, &tile)) {
++				continue;
++			}
++
++			for (int ty = 0; ty < tileH; ++ty) {
++				const int dstY = my * tileH + ty;
++				QRgb* scan = reinterpret_cast<QRgb*>(img.scanLine(dstY));
++				const int dstX0 = mx * tileW;
++				for (int tx = 0; tx < tileW; ++tx) {
++					const quint8 b = tile[ty * bytesPerRow + (tx / 4)];
++					const int shift = 6 - 2 * (tx & 3);
++					const quint8 px = static_cast<quint8>((b >> shift) & 3);
++					scan[dstX0 + tx] = colorAt(paletteId, px);
++				}
++			}
++		}
++	}
++
++	// Sprite overlay
++	m_spriteImage = QImage(w, h, QImage::Format_ARGB32);
++	m_spriteImage.fill(qRgba(0, 0, 0, 0));
++	const QVector<quint8> objPal = m_doc->objPaletteBytes();
++	const auto objColorAt = [&](quint8 paletteId, quint8 colorId) -> QRgb {
++		if (colorId == 0) {
++			return qRgba(0, 0, 0, 0);
++		}
++		const int idx = (paletteId & 7) * 4 + (colorId & 3);
++		if (idx < 0 || idx >= objPal.size()) {
++			return qRgba(0, 0, 0, 0);
++		}
++		return _colorFromGColor8(objPal[idx]);
++	};
++	const int scale = tileW / 8;
++	const int spriteW = 8 * scale;
++	const int spriteHeight = m_doc->spriteHeight();
++	const int spriteH = spriteHeight * scale;
++	for (int i = 0; i < m_doc->spriteCount(); ++i) {
++		quint8 oy = 0;
++		quint8 ox = 0;
++		quint8 tile = 0;
++		quint8 attr = 0;
++		if (!m_doc->spriteRaw(i, &oy, &ox, &tile, &attr)) {
++			continue;
++		}
++		const int x0 = (static_cast<int>(ox) - 8) * scale;
++		const int y0 = (static_cast<int>(oy) - 16) * scale;
++		if (x0 >= w || y0 >= h || x0 + spriteW <= 0 || y0 + spriteH <= 0) {
++			continue;
++		}
++		const bool xflip = (attr & 0x20) != 0;
++		const bool yflip = (attr & 0x40) != 0;
++		const int bank = (m_doc->isCgb() && (attr & 0x08)) ? 1 : 0;
++		const int paletteId = m_doc->isCgb() ? (attr & 0x07) : ((attr & 0x10) ? 1 : 0);
++		int tileIndex = tile;
++		if (spriteHeight == 16) {
++			tileIndex &= 0xFE;
++		}
++		const quint8* tile0 = nullptr;
++		const quint8* tile1 = nullptr;
++		if (!m_doc->tilePixels(static_cast<quint16>(bank), static_cast<quint16>(tileIndex), &tile0)) {
++			continue;
++		}
++		if (spriteHeight == 16) {
++			(void) m_doc->tilePixels(static_cast<quint16>(bank), static_cast<quint16>(tileIndex + 1), &tile1);
++		}
++
++		for (int sy = 0; sy < spriteH; ++sy) {
++			const int srcY = yflip ? (spriteH - 1 - sy) : sy;
++			const int tileRow = srcY / tileH;
++			const int ty = srcY % tileH;
++			const quint8* tilePtr = (tileRow == 0) ? tile0 : tile1;
++			if (!tilePtr) {
++				continue;
++			}
++			const int dstY = y0 + sy;
++			if (dstY < 0 || dstY >= h) {
++				continue;
++			}
++			QRgb* scan = reinterpret_cast<QRgb*>(m_spriteImage.scanLine(dstY));
++			for (int sx = 0; sx < spriteW; ++sx) {
++				const int srcX = xflip ? (spriteW - 1 - sx) : sx;
++				const int tx = srcX % tileW;
++				const int byteOff = ty * bytesPerRow + (tx / 4);
++				const int shift = 6 - 2 * (tx & 3);
++				const quint8 b = tilePtr[byteOff];
++				const quint8 px = static_cast<quint8>((b >> shift) & 3);
++				if (px == 0) {
++					continue;
++				}
++				const int dstX = x0 + sx;
++				if (dstX < 0 || dstX >= w) {
++					continue;
++				}
++				scan[dstX] = objColorAt(static_cast<quint8>(paletteId), px);
++			}
++		}
++	}
++
++	m_image = img;
++	update();
++}
++
++void PblvTileMapWidget::paintEvent(QPaintEvent* event) {
++	Q_UNUSED(event);
++
++	QPainter p(this);
++	p.fillRect(rect(), palette().window());
++	p.setRenderHint(QPainter::SmoothPixmapTransform, false);
++
++	if (m_image.isNull()) {
++		return;
++	}
++
++	const QSize target = size();
++	const QSize src = m_image.size();
++	if (src.isEmpty()) {
++		return;
++	}
++
++	const qreal sx = static_cast<qreal>(target.width()) / static_cast<qreal>(src.width());
++	const qreal sy = static_cast<qreal>(target.height()) / static_cast<qreal>(src.height());
++	const qreal s = qMax<qreal>(1.0, qFloor(qMin(sx, sy)));
++	const QSize scaled(static_cast<int>(src.width() * s), static_cast<int>(src.height() * s));
++	const QRect dst(QPoint((target.width() - scaled.width()) / 2, (target.height() - scaled.height()) / 2), scaled);
++
++	p.drawImage(dst, m_image);
++	if (!m_spriteImage.isNull()) {
++		p.drawImage(dst, m_spriteImage);
++	}
++
++	if (!m_selectedSprites.isEmpty() && m_doc && m_doc->isLoaded()) {
++		QPen pen(Qt::red);
++		pen.setCosmetic(true);
++		pen.setWidth(2);
++		p.setPen(pen);
++		p.setBrush(Qt::NoBrush);
++
++		const int tileW = m_doc->tileW();
++		const int scale = tileW / 8;
++		const int spriteW = 8 * scale;
++		const int spriteH = m_doc->spriteHeight() * scale;
++		const int screenW = m_doc->mapW() * tileW;
++		const int screenH = m_doc->mapH() * m_doc->tileH();
++
++		for (int idx : m_selectedSprites) {
++			quint8 oy = 0;
++			quint8 ox = 0;
++			quint8 tile = 0;
++			quint8 attr = 0;
++			if (!m_doc->spriteRaw(idx, &oy, &ox, &tile, &attr)) {
++				continue;
++			}
++			const int x0 = (static_cast<int>(ox) - 8) * scale;
++			const int y0 = (static_cast<int>(oy) - 16) * scale;
++			if (x0 >= screenW || y0 >= screenH || x0 + spriteW <= 0 || y0 + spriteH <= 0) {
++				continue;
++			}
++			const int vx = dst.x() + static_cast<int>(x0 * s);
++			const int vy = dst.y() + static_cast<int>(y0 * s);
++			const int vw = static_cast<int>(spriteW * s);
++			const int vh = static_cast<int>(spriteH * s);
++			p.drawRect(QRect(vx, vy, vw, vh).adjusted(0, 0, -1, -1));
++		}
++	}
++
++	if (!m_animatedMap.isEmpty() && m_doc && m_doc->isLoaded()) {
++		QPen pen(Qt::red);
++		pen.setCosmetic(true);
++		pen.setWidth(2);
++		p.setPen(pen);
++		p.setBrush(Qt::NoBrush);
++		const int tileW = m_doc->tileW();
++		const int tileH = m_doc->tileH();
++		for (int idx : m_animatedMap) {
++			if (idx < 0) {
++				continue;
++			}
++			const int mx = idx % m_doc->mapW();
++			const int my = idx / m_doc->mapW();
++			if (mx < 0 || my < 0 || mx >= m_doc->mapW() || my >= m_doc->mapH()) {
++				continue;
++			}
++			const int x = dst.x() + static_cast<int>(mx * tileW * s);
++			const int y = dst.y() + static_cast<int>(my * tileH * s);
++			const int w = static_cast<int>(tileW * s);
++			const int h = static_cast<int>(tileH * s);
++			p.drawRect(QRect(x, y, w, h).adjusted(0, 0, -1, -1));
++		}
++	}
++
++	if (!m_animatedSprites.isEmpty() && m_doc && m_doc->isLoaded()) {
++		QPen pen(Qt::red);
++		pen.setCosmetic(true);
++		pen.setWidth(2);
++		p.setPen(pen);
++		p.setBrush(Qt::NoBrush);
++
++		const int tileW = m_doc->tileW();
++		const int scale = tileW / 8;
++		const int spriteW = 8 * scale;
++		const int spriteH = m_doc->spriteHeight() * scale;
++		const int screenW = m_doc->mapW() * tileW;
++		const int screenH = m_doc->mapH() * m_doc->tileH();
++
++		for (int idx : m_animatedSprites) {
++			quint8 oy = 0;
++			quint8 ox = 0;
++			quint8 tile = 0;
++			quint8 attr = 0;
++			if (!m_doc->spriteRaw(idx, &oy, &ox, &tile, &attr)) {
++				continue;
++			}
++			const int x0 = (static_cast<int>(ox) - 8) * scale;
++			const int y0 = (static_cast<int>(oy) - 16) * scale;
++			if (x0 >= screenW || y0 >= screenH || x0 + spriteW <= 0 || y0 + spriteH <= 0) {
++				continue;
++			}
++			const int vx = dst.x() + static_cast<int>(x0 * s);
++			const int vy = dst.y() + static_cast<int>(y0 * s);
++			const int vw = static_cast<int>(spriteW * s);
++			const int vh = static_cast<int>(spriteH * s);
++			p.drawRect(QRect(vx, vy, vw, vh).adjusted(0, 0, -1, -1));
++		}
++	}
++
++	if (!m_selectedCells.isEmpty()) {
++		p.setBrush(Qt::NoBrush);
++		QPen pen(Qt::red);
++		pen.setCosmetic(true);
++		p.setPen(pen);
++		for (const QPoint& cell : m_selectedCells) {
++			const int mx = cell.x();
++			const int my = cell.y();
++			if (!m_doc || !m_doc->isLoaded()) {
++				continue;
++			}
++			if (mx < 0 || my < 0 || mx >= m_doc->mapW() || my >= m_doc->mapH()) {
++				continue;
++			}
++			const int tileW = m_doc->tileW();
++			const int tileH = m_doc->tileH();
++			const int x = dst.x() + static_cast<int>(mx * tileW * s);
++			const int y = dst.y() + static_cast<int>(my * tileH * s);
++			const int w = static_cast<int>(tileW * s);
++			const int h = static_cast<int>(tileH * s);
++			p.drawRect(QRect(x, y, w, h).adjusted(0, 0, -1, -1));
++		}
++	}
++}
+diff --git a/src/platform/qt/pblv/PblvTileMapWidget.h b/src/platform/qt/pblv/PblvTileMapWidget.h
+new file mode 100644
+index 000000000..687333c1a
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvTileMapWidget.h
+@@ -0,0 +1,36 @@
++#pragma once
++
++#include <QtWidgets/QWidget>
++
++class PblvDocument;
++
++class PblvTileMapWidget : public QWidget {
++	Q_OBJECT
++
++public:
++	explicit PblvTileMapWidget(QWidget* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++	void setSelectedCells(const QVector<QPoint>& cells);
++	void setSelectedSprites(const QVector<int>& indices);
++	void setAnimatedMapCells(const QVector<int>& mapIndices);
++	void setAnimatedSprites(const QVector<int>& spriteIndices);
++
++protected:
++	void paintEvent(QPaintEvent* event) override;
++	QSize sizeHint() const override;
++
++private slots:
++	void _rebuildImage();
++
++private:
++	static QRgb _colorFromGColor8(quint8 g);
++
++	PblvDocument* m_doc = nullptr;
++	QImage m_image;
++	QImage m_spriteImage;
++	QVector<QPoint> m_selectedCells;
++	QVector<int> m_selectedSprites;
++	QVector<int> m_animatedMap;
++	QVector<int> m_animatedSprites;
++};
+diff --git a/src/platform/qt/pblv/PblvTilesModel.cpp b/src/platform/qt/pblv/PblvTilesModel.cpp
+new file mode 100644
+index 000000000..8feb972bf
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvTilesModel.cpp
+@@ -0,0 +1,162 @@
++#include "PblvTilesModel.h"
++
++#include "PblvDocument.h"
++
++#include <QtGui/QColor>
++#include <QtGui/QImage>
++#include <QtGui/QPixmap>
++
++namespace {
++QRgb _colorFromGColor8(quint8 g) {
++	const int a2 = (g >> 6) & 3;
++	const int r2 = (g >> 4) & 3;
++	const int g2 = (g >> 2) & 3;
++	const int b2 = (g >> 0) & 3;
++	return qRgba(r2 * 85, g2 * 85, b2 * 85, a2 * 85);
++}
++} // namespace
++
++PblvTilesModel::PblvTilesModel(QObject* parent)
++    : QAbstractTableModel(parent) { }
++
++void PblvTilesModel::setDocument(PblvDocument* doc) {
++	if (m_doc == doc) {
++		return;
++	}
++	beginResetModel();
++	if (m_doc) {
++		disconnect(m_doc, nullptr, this, nullptr);
++	}
++	m_doc = doc;
++	if (m_doc) {
++		connect(m_doc, &PblvDocument::documentChanged, this, &PblvTilesModel::_onDocChanged);
++		connect(m_doc, &PblvDocument::documentLoaded, this, &PblvTilesModel::_onDocLoaded);
++	}
++	endResetModel();
++}
++
++PblvDocument* PblvTilesModel::document() const {
++	return m_doc;
++}
++
++int PblvTilesModel::tilesPerRow() const {
++	return m_tilesPerRow;
++}
++
++int PblvTilesModel::columnCount(const QModelIndex& parent) const {
++	if (parent.isValid() || !m_doc || !m_doc->isLoaded()) {
++		return 0;
++	}
++	return m_tilesPerRow;
++}
++
++int PblvTilesModel::rowCount(const QModelIndex& parent) const {
++	if (parent.isValid() || !m_doc || !m_doc->isLoaded()) {
++		return 0;
++	}
++	const int rowsPerBank = (m_doc->tileCount() + m_tilesPerRow - 1) / m_tilesPerRow;
++	return rowsPerBank * m_doc->bankCount();
++}
++
++QImage PblvTilesModel::_tileToImage(const quint8* tilePixels, int tileW, int tileH,
++                                    const QVector<quint8>& bgPaletteBytes, quint8 paletteId) {
++	// Pebble-packed 2bpp: 4 pixels per byte.
++	const int bytesPerRow = tileW / 4;
++	QImage img(tileW, tileH, QImage::Format_ARGB32);
++	img.fill(qRgba(0, 0, 0, 255));
++
++	auto colorAt = [&](quint8 colorId) -> QRgb {
++		const int idx = (paletteId & 7) * 4 + (colorId & 3);
++		if (idx < 0 || idx >= bgPaletteBytes.size()) {
++			return qRgba(0, 0, 0, 255);
++		}
++		return _colorFromGColor8(bgPaletteBytes[idx]);
++	};
++
++	for (int y = 0; y < tileH; ++y) {
++		QRgb* scan = reinterpret_cast<QRgb*>(img.scanLine(y));
++		for (int x = 0; x < tileW; ++x) {
++			const quint8 b = tilePixels[y * bytesPerRow + (x / 4)];
++			const int shift = 6 - 2 * (x & 3);
++			const quint8 px = static_cast<quint8>((b >> shift) & 3);
++			scan[x] = colorAt(px);
++		}
++	}
++
++	return img;
++}
++
++QVariant PblvTilesModel::data(const QModelIndex& index, int role) const {
++	if (!m_doc || !m_doc->isLoaded() || !index.isValid()) {
++		return {};
++	}
++
++	const int col = index.column();
++	const int row = index.row();
++	const int rowsPerBank = (m_doc->tileCount() + m_tilesPerRow - 1) / m_tilesPerRow;
++	const int bank = row / rowsPerBank;
++	const int rowInBank = row % rowsPerBank;
++	const int tileIndex = rowInBank * m_tilesPerRow + col;
++	if (bank < 0 || bank >= m_doc->bankCount()) {
++		return {};
++	}
++	if (tileIndex < 0 || tileIndex >= m_doc->tileCount()) {
++		return {};
++	}
++
++	if (role == Qt::DecorationRole) {
++		const quint8* tile = nullptr;
++		if (!m_doc->tilePixels(static_cast<quint16>(bank), static_cast<quint16>(tileIndex), &tile)) {
++			return {};
++		}
++		const QVector<quint8> pal = m_doc->bgPaletteBytes();
++		QImage img = _tileToImage(tile, m_doc->tileW(), m_doc->tileH(), pal, 0);
++		if (m_tileScale != 1) {
++			img = img.scaled(img.width() * m_tileScale, img.height() * m_tileScale, Qt::IgnoreAspectRatio,
++			                 Qt::FastTransformation);
++		}
++		return QPixmap::fromImage(img);
++	}
++
++	if (role == Qt::ToolTipRole) {
++		const quint32 tileId =
++		    static_cast<quint32>(bank) * static_cast<quint32>(m_doc->tileCount()) + static_cast<quint32>(tileIndex);
++		return QString("tileId=%1").arg(tileId);
++	}
++
++	return {};
++}
++
++QVariant PblvTilesModel::headerData(int section, Qt::Orientation orientation, int role) const {
++	if (!m_doc || !m_doc->isLoaded()) {
++		return {};
++	}
++	if (role != Qt::DisplayRole) {
++		return {};
++	}
++	if (orientation == Qt::Horizontal) {
++		return section;
++	}
++	const int rowsPerBank = (m_doc->tileCount() + m_tilesPerRow - 1) / m_tilesPerRow;
++	const int bank = section / rowsPerBank;
++	const int rowInBank = section % rowsPerBank;
++	const int firstTile = rowInBank * m_tilesPerRow;
++	const quint32 base =
++	    static_cast<quint32>(bank) * static_cast<quint32>(m_doc->tileCount()) + static_cast<quint32>(firstTile);
++	const quint32 last = base + static_cast<quint32>(m_tilesPerRow) - 1u;
++	return QString("%1-%2").arg(base).arg(last);
++}
++
++void PblvTilesModel::_onDocChanged() {
++	if (!m_doc || !m_doc->isLoaded()) {
++		return;
++	}
++	const QModelIndex tl = this->index(0, 0);
++	const QModelIndex br = this->index(rowCount() - 1, columnCount() - 1);
++	emit dataChanged(tl, br, { Qt::DecorationRole, Qt::ToolTipRole });
++}
++
++void PblvTilesModel::_onDocLoaded() {
++	beginResetModel();
++	endResetModel();
++}
+diff --git a/src/platform/qt/pblv/PblvTilesModel.h b/src/platform/qt/pblv/PblvTilesModel.h
+new file mode 100644
+index 000000000..ec72ef2e4
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvTilesModel.h
+@@ -0,0 +1,34 @@
++#pragma once
++
++#include <QtCore/QAbstractTableModel>
++
++class PblvDocument;
++
++class PblvTilesModel : public QAbstractTableModel {
++	Q_OBJECT
++
++public:
++	explicit PblvTilesModel(QObject* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++	PblvDocument* document() const;
++
++	int rowCount(const QModelIndex& parent = QModelIndex()) const override;
++	int columnCount(const QModelIndex& parent = QModelIndex()) const override;
++	QVariant data(const QModelIndex& index, int role) const override;
++	QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
++
++	int tilesPerRow() const;
++
++private slots:
++	void _onDocChanged();
++	void _onDocLoaded();
++
++private:
++	static QImage _tileToImage(const quint8* tilePixels, int tileW, int tileH, const QVector<quint8>& bgPaletteBytes,
++	                           quint8 paletteId);
++
++	PblvDocument* m_doc = nullptr;
++	int m_tilesPerRow = 16;
++	int m_tileScale = 2;
++};
+diff --git a/src/platform/qt/pblv/PblvTilesWindow.cpp b/src/platform/qt/pblv/PblvTilesWindow.cpp
+new file mode 100644
+index 000000000..6b17cd6bf
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvTilesWindow.cpp
+@@ -0,0 +1,282 @@
++#include "PblvTilesWindow.h"
++
++#include "PblvDocument.h"
++#include "PblvTilesModel.h"
++
++#include <QtGui/QKeyEvent>
++#include <QtGui/QMouseEvent>
++#include <QtGui/QPainter>
++#include <QtWidgets/QHBoxLayout>
++#include <QtWidgets/QHeaderView>
++#include <QtWidgets/QLabel>
++#include <QtWidgets/QTableView>
++#include <QtWidgets/QVBoxLayout>
++#include <QtWidgets/QWidget>
++
++namespace {
++QRgb _colorFromGColor8(quint8 g) {
++	const int a2 = (g >> 6) & 3;
++	const int r2 = (g >> 4) & 3;
++	const int g2 = (g >> 2) & 3;
++	const int b2 = (g >> 0) & 3;
++	return qRgba(r2 * 85, g2 * 85, b2 * 85, a2 * 85);
++}
++
++class PblvTileEditorWidget final : public QWidget {
++public:
++	explicit PblvTileEditorWidget(QWidget* parent = nullptr)
++	    : QWidget(parent) {
++		setMinimumSize(QSize(256, 256));
++		setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
++		setFocusPolicy(Qt::StrongFocus);
++	}
++
++	void setDocument(PblvDocument* doc) {
++		if (m_doc == doc) {
++			return;
++		}
++		if (m_doc) {
++			disconnect(m_doc, nullptr, this, nullptr);
++		}
++		m_doc = doc;
++		if (m_doc) {
++			connect(m_doc, &PblvDocument::documentChanged, this, QOverload<>::of(&QWidget::update));
++			connect(m_doc, &PblvDocument::documentLoaded, this, QOverload<>::of(&QWidget::update));
++		}
++		update();
++	}
++
++	void setTile(quint16 bank, quint16 tileIndex) {
++		m_hasTile = true;
++		m_bank = bank;
++		m_tileIndex = tileIndex;
++		m_selection = QRect(0, 0, 1, 1);
++		m_dragging = false;
++		update();
++	}
++
++	void clearTile() {
++		m_hasTile = false;
++		m_selection = QRect();
++		m_dragging = false;
++		update();
++	}
++
++	QSize sizeHint() const override { return QSize(256, 256); }
++
++protected:
++	void paintEvent(QPaintEvent* event) override {
++		Q_UNUSED(event);
++		QPainter p(this);
++		p.fillRect(rect(), palette().window());
++		p.setRenderHint(QPainter::Antialiasing, false);
++
++		if (!m_doc || !m_doc->isLoaded() || !m_hasTile) {
++			p.setPen(palette().text().color());
++			p.drawText(rect().adjusted(6, 6, -6, -6), Qt::AlignLeft | Qt::AlignTop, "Click a tile to edit");
++			return;
++		}
++
++		const int tileW = m_doc->tileW();
++		const int tileH = m_doc->tileH();
++		const int bytesPerRow = tileW / 4;
++		const int cell = qMax(1, qMin(width() / tileW, height() / tileH));
++		const int gridW = tileW * cell;
++		const int gridH = tileH * cell;
++		const QRect gridRect((width() - gridW) / 2, (height() - gridH) / 2, gridW, gridH);
++
++		const QVector<quint8> pal = m_doc->bgPaletteBytes();
++		auto colorAt = [&](quint8 colorId) -> QRgb {
++			const int idx = (0 * 4) + (colorId & 3);
++			if (idx < 0 || idx >= pal.size()) {
++				return qRgba(0, 0, 0, 255);
++			}
++			return _colorFromGColor8(pal[idx]);
++		};
++
++		const quint8* tile = nullptr;
++		if (!m_doc->tilePixels(m_bank, m_tileIndex, &tile) || !tile) {
++			p.setPen(palette().text().color());
++			p.drawText(rect().adjusted(6, 6, -6, -6), Qt::AlignLeft | Qt::AlignTop, "Invalid tile");
++			return;
++		}
++
++		for (int y = 0; y < tileH; ++y) {
++			for (int x = 0; x < tileW; ++x) {
++				const quint8 b = tile[y * bytesPerRow + (x / 4)];
++				const int shift = 6 - 2 * (x & 3);
++				const quint8 px = static_cast<quint8>((b >> shift) & 3);
++				p.fillRect(QRect(gridRect.x() + x * cell, gridRect.y() + y * cell, cell, cell),
++				           QColor::fromRgba(colorAt(px)));
++			}
++		}
++
++		// Grid lines
++		QPen pen(palette().mid().color());
++		pen.setCosmetic(true);
++		p.setPen(pen);
++		for (int x = 0; x <= tileW; ++x) {
++			p.drawLine(gridRect.x() + x * cell, gridRect.y(), gridRect.x() + x * cell, gridRect.bottom());
++		}
++		for (int y = 0; y <= tileH; ++y) {
++			p.drawLine(gridRect.x(), gridRect.y() + y * cell, gridRect.right(), gridRect.y() + y * cell);
++		}
++
++		// Selection overlay
++		if (m_selection.isValid()) {
++			QRect s = m_selection.normalized().intersected(QRect(0, 0, tileW, tileH));
++			if (s.isValid()) {
++				QPen selPen(Qt::red);
++				selPen.setCosmetic(true);
++				selPen.setWidth(2);
++				p.setPen(selPen);
++				p.setBrush(Qt::NoBrush);
++				const QRect selRect(gridRect.x() + s.left() * cell, gridRect.y() + s.top() * cell, s.width() * cell,
++				                    s.height() * cell);
++				p.drawRect(selRect.adjusted(1, 1, -2, -2));
++			}
++		}
++	}
++
++	void mousePressEvent(QMouseEvent* event) override {
++		if (!m_doc || !m_doc->isLoaded() || !m_hasTile) {
++			return;
++		}
++		if (event->button() != Qt::LeftButton) {
++			return;
++		}
++		setFocus(Qt::MouseFocusReason);
++		const int tileW = m_doc->tileW();
++		const int tileH = m_doc->tileH();
++		const int cell = qMax(1, qMin(width() / tileW, height() / tileH));
++		const int gridW = tileW * cell;
++		const int gridH = tileH * cell;
++		const QRect gridRect((width() - gridW) / 2, (height() - gridH) / 2, gridW, gridH);
++		if (!gridRect.contains(event->pos())) {
++			return;
++		}
++		const int x = (event->pos().x() - gridRect.x()) / cell;
++		const int y = (event->pos().y() - gridRect.y()) / cell;
++		if (x < 0 || y < 0 || x >= tileW || y >= tileH) {
++			return;
++		}
++		m_dragging = true;
++		m_anchor = QPoint(x, y);
++		m_selection = QRect(m_anchor, m_anchor);
++		update();
++	}
++
++	void mouseMoveEvent(QMouseEvent* event) override {
++		if (!m_dragging || !m_doc || !m_doc->isLoaded() || !m_hasTile) {
++			return;
++		}
++		const int tileW = m_doc->tileW();
++		const int tileH = m_doc->tileH();
++		const int cell = qMax(1, qMin(width() / tileW, height() / tileH));
++		const int gridW = tileW * cell;
++		const int gridH = tileH * cell;
++		const QRect gridRect((width() - gridW) / 2, (height() - gridH) / 2, gridW, gridH);
++		QPoint pos = event->pos();
++		pos.setX(qBound(gridRect.left(), pos.x(), gridRect.right() - 1));
++		pos.setY(qBound(gridRect.top(), pos.y(), gridRect.bottom() - 1));
++		const int x = (pos.x() - gridRect.x()) / cell;
++		const int y = (pos.y() - gridRect.y()) / cell;
++		m_selection = QRect(m_anchor, QPoint(x, y));
++		update();
++	}
++
++	void mouseReleaseEvent(QMouseEvent* event) override {
++		Q_UNUSED(event);
++		m_dragging = false;
++	}
++
++	void keyPressEvent(QKeyEvent* event) override {
++		if (!m_doc || !m_doc->isLoaded() || !m_hasTile || !m_selection.isValid()) {
++			QWidget::keyPressEvent(event);
++			return;
++		}
++		if (event->key() == Qt::Key_Right) {
++			(void) m_doc->cycleTilePixels(m_bank, m_tileIndex, m_selection, +1);
++			event->accept();
++			return;
++		}
++		if (event->key() == Qt::Key_Left) {
++			(void) m_doc->cycleTilePixels(m_bank, m_tileIndex, m_selection, -1);
++			event->accept();
++			return;
++		}
++		QWidget::keyPressEvent(event);
++	}
++
++private:
++	PblvDocument* m_doc = nullptr;
++	bool m_hasTile = false;
++	quint16 m_bank = 0;
++	quint16 m_tileIndex = 0;
++	bool m_dragging = false;
++	QPoint m_anchor;
++	QRect m_selection;
++};
++} // namespace
++
++PblvTilesWindow::PblvTilesWindow(QWidget* parent)
++    : QMainWindow(parent) {
++	setWindowTitle("PBLV Tiles");
++
++	QWidget* root = new QWidget(this);
++	QHBoxLayout* layout = new QHBoxLayout(root);
++	layout->setContentsMargins(8, 8, 8, 8);
++	layout->setSpacing(8);
++
++	m_view = new QTableView(root);
++	m_model = new PblvTilesModel(this);
++	m_view->setModel(m_model);
++	m_view->setSelectionMode(QAbstractItemView::ExtendedSelection);
++	m_view->setSelectionBehavior(QAbstractItemView::SelectItems);
++	m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
++	m_view->setIconSize(QSize(16, 16));
++	m_view->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++	m_view->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++	layout->addWidget(m_view, 1);
++
++	QWidget* panel = new QWidget(root);
++	QVBoxLayout* col = new QVBoxLayout(panel);
++	col->setContentsMargins(0, 0, 0, 0);
++	col->setSpacing(6);
++	col->addWidget(new QLabel("Tile editor: drag to select; Left/Right arrows cycle colors", panel));
++	PblvTileEditorWidget* editor = new PblvTileEditorWidget(panel);
++	m_editor = editor;
++	col->addWidget(editor);
++	col->addStretch(1);
++
++	layout->addWidget(panel, 0);
++	setCentralWidget(root);
++
++	connect(m_view, &QTableView::clicked, this, [this, editor](const QModelIndex& index) {
++		if (!m_doc || !m_doc->isLoaded() || !index.isValid()) {
++			editor->clearTile();
++			return;
++		}
++		const int col = index.column();
++		const int row = index.row();
++		const int rowsPerBank = (m_doc->tileCount() + m_model->tilesPerRow() - 1) / m_model->tilesPerRow();
++		const int bank = row / rowsPerBank;
++		const int rowInBank = row % rowsPerBank;
++		const int tileIndex = rowInBank * m_model->tilesPerRow() + col;
++		if (bank < 0 || bank >= m_doc->bankCount() || tileIndex < 0 || tileIndex >= m_doc->tileCount()) {
++			editor->clearTile();
++			return;
++		}
++		editor->setTile(static_cast<quint16>(bank), static_cast<quint16>(tileIndex));
++	});
++}
++
++void PblvTilesWindow::setDocument(PblvDocument* doc) {
++	m_doc = doc;
++	m_model->setDocument(doc);
++	auto* editor = static_cast<PblvTileEditorWidget*>(m_editor);
++	if (editor) {
++		editor->setDocument(doc);
++		editor->clearTile();
++	}
++}
+diff --git a/src/platform/qt/pblv/PblvTilesWindow.h b/src/platform/qt/pblv/PblvTilesWindow.h
+new file mode 100644
+index 000000000..9b6db5175
+--- /dev/null
++++ b/src/platform/qt/pblv/PblvTilesWindow.h
+@@ -0,0 +1,23 @@
++#pragma once
++
++#include <QtWidgets/QMainWindow>
++
++class PblvDocument;
++class PblvTilesModel;
++class QTableView;
++class QWidget;
++
++class PblvTilesWindow : public QMainWindow {
++	Q_OBJECT
++
++public:
++	explicit PblvTilesWindow(QWidget* parent = nullptr);
++
++	void setDocument(PblvDocument* doc);
++
++private:
++	QTableView* m_view = nullptr;
++	PblvTilesModel* m_model = nullptr;
++	PblvDocument* m_doc = nullptr;
++	QWidget* m_editor = nullptr;
++};
+diff --git a/src/platform/qt/pblv/main.cpp b/src/platform/qt/pblv/main.cpp
+new file mode 100644
+index 000000000..78a67d41b
+--- /dev/null
++++ b/src/platform/qt/pblv/main.cpp
+@@ -0,0 +1,13 @@
++#include "PblvMainWindow.h"
++
++#include <QtWidgets/QApplication>
++
++int main(int argc, char** argv) {
++	QApplication app(argc, argv);
++	PblvMainWindow w;
++	if (argc >= 2 && argv[1] && argv[1][0]) {
++		w.openPath(QString::fromLocal8Bit(argv[1]));
++	}
++	w.show();
++	return app.exec();
++}
+-- 
+2.51.0
+
