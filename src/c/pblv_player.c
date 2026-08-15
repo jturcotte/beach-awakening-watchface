@@ -398,8 +398,35 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds) {
   uint8_t last_pal = 0xFF;
   GColor palette[4];
 
+  const int16_t clip_left   = bounds.origin.x;
+  const int16_t clip_top    = bounds.origin.y;
+  const int16_t clip_right  = (int16_t)(bounds.origin.x + bounds.size.w);
+  const int16_t clip_bottom = (int16_t)(bounds.origin.y + bounds.size.h);
+
   for(uint16_t ty = 0; ty < draw_tiles_h; ty++) {
+    const int16_t y = (int16_t)(bounds.origin.y + offset_y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
+
+    // Row is below the visible area: every later row is further down too, stop entirely.
+    if(y >= clip_bottom) {
+      break;
+    }
+    // Row hasn't reached the visible area yet: skip it, later rows may still be visible.
+    if((int16_t)(y + PBLV_TILE_PX) <= clip_top) {
+      continue;
+    }
+
     for(uint16_t tx = 0; tx < draw_tiles_w; tx++) {
+      const int16_t x = (int16_t)(bounds.origin.x + offset_x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
+
+      // Column is past the right edge: every later column is further right too, stop this row.
+      if(x >= clip_right) {
+        break;
+      }
+      // Column hasn't reached the visible area yet: skip it, later columns may still be visible.
+      if((int16_t)(x + PBLV_TILE_PX) <= clip_left) {
+        continue;
+      }
+
       const uint32_t map_index = (uint32_t)tx + (uint32_t)ty * 20u;
       const uint16_t tile_key = player->map[map_index].tile_key;
       const uint16_t tile_index = (uint16_t)(tile_key & 0x7FFF);
@@ -421,8 +448,6 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds) {
 
       gbitmap_set_data(player->scratch_tile, (uint8_t *)tile, GBitmapFormat2BitPalette, 4, false);
 
-      const int16_t x = (int16_t)(bounds.origin.x + offset_x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
-      const int16_t y = (int16_t)(bounds.origin.y + offset_y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
       graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
     }
   }
