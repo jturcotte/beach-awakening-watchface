@@ -46,7 +46,7 @@
 #define LOOP_PAUSE_DURATION_TICK_TRIGGER 60000
 
 static Window *s_window;
-static Layer *s_canvas_layer;
+static Layer *s_root_layer;
 static AppTimer *s_timer;
 
 static PblvPlayer s_player;
@@ -280,8 +280,8 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     }
     s_show_date = enabled;
     persist_write_bool(MESSAGE_KEY_SHOW_DATE, enabled);
-    if(s_canvas_layer) {
-      layer_mark_dirty(s_canvas_layer);
+    if(s_root_layer) {
+      layer_mark_dirty(s_root_layer);
     }
   }
 }
@@ -329,8 +329,8 @@ static void update_face(void) {
 }
 
 static void prv_tick_handler(struct tm *tick_time, TimeUnits units_changed) {
-  if(s_canvas_layer) {
-    layer_mark_dirty(s_canvas_layer);
+  if(s_root_layer) {
+    layer_mark_dirty(s_root_layer);
   }
 
   update_face();
@@ -440,7 +440,7 @@ static void prv_timer_cb(void *context) {
   }
 
   // Request a redraw; we render into the system framebuffer in update_proc.
-  layer_mark_dirty(s_canvas_layer);
+  layer_mark_dirty(s_root_layer);
 
   // Queue next frame.
   prv_schedule_next_frame();
@@ -472,12 +472,8 @@ static void prv_schedule_next_frame(void) {
 }
 
 static void prv_window_load(Window *window) {
-  Layer *window_layer = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(window_layer);
-
-  s_canvas_layer = layer_create(bounds);
-  layer_set_update_proc(s_canvas_layer, prv_canvas_update_proc);
-  layer_add_child(window_layer, s_canvas_layer);
+  s_root_layer = window_get_root_layer(window);
+  layer_set_update_proc(s_root_layer, prv_canvas_update_proc);
 
   const ResHandle res = resource_get_handle(RESOURCE_ID_BEACH_PBLV);
   s_player_ready = pblv_player_init(&s_player, res);
@@ -525,7 +521,7 @@ static void prv_window_load(Window *window) {
 
   if(s_player_ready) {
     // Render keyframe immediately.
-    layer_mark_dirty(s_canvas_layer);
+    layer_mark_dirty(s_root_layer);
 
     // Schedule the first frame.
     prv_schedule_next_frame();
@@ -579,8 +575,6 @@ static void prv_window_unload(Window *window) {
     gbitmap_destroy(s_digits);
     s_digits = NULL;
   }
-
-  layer_destroy(s_canvas_layer);
 }
 
 static void prv_init(void) {
