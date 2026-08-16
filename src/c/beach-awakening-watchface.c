@@ -56,6 +56,7 @@ static int32_t s_loop_pause_duration = LOOP_PAUSE_DURATION_DEFAULT;
 static bool s_waiting_for_tick_loop;
 static uint32_t s_waiting_for_tick_delay_ms;
 static bool s_show_date = true;
+static bool s_show_sprites = true;
 
 static GBitmap *s_digits;
 static GBitmap *s_digit_sub[DIGIT_COUNT];
@@ -288,6 +289,28 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     }
     s_show_date = enabled;
     persist_write_bool(MESSAGE_KEY_SHOW_DATE, enabled);
+
+    if(s_root_layer) {
+      layer_mark_dirty(s_root_layer);
+    }
+  }
+
+  Tuple *show_sprites = dict_find(iter, MESSAGE_KEY_SHOW_SPRITES);
+  if(show_sprites) {
+    bool enabled = false;
+    switch(show_sprites->type) {
+      case TUPLE_INT:
+        enabled = show_sprites->value->int32 != 0;
+        break;
+      case TUPLE_UINT:
+        enabled = show_sprites->value->uint32 != 0;
+        break;
+      default:
+        break;
+    }
+    s_show_sprites = enabled;
+    persist_write_bool(MESSAGE_KEY_SHOW_SPRITES, enabled);
+
     if(s_root_layer) {
       layer_mark_dirty(s_root_layer);
     }
@@ -429,7 +452,7 @@ static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
   }
 
   const GRect bounds = layer_get_bounds(layer);
-  pblv_player_render(&s_player, ctx, bounds);
+  pblv_player_render(&s_player, ctx, bounds, s_show_sprites);
   prv_draw_time(ctx, bounds);
 }
 
@@ -599,6 +622,10 @@ static void prv_init(void) {
 
   if(persist_exists(MESSAGE_KEY_SHOW_DATE)) {
     s_show_date = persist_read_bool(MESSAGE_KEY_SHOW_DATE);
+  }
+
+  if(persist_exists(MESSAGE_KEY_SHOW_SPRITES)) {
+    s_show_sprites = persist_read_bool(MESSAGE_KEY_SHOW_SPRITES);
   }
 
   s_window = window_create();

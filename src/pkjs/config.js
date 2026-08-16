@@ -50,6 +50,12 @@ module.exports = [
         defaultValue: true
       },
       {
+        type: 'toggle',
+        messageKey: 'SHOW_SPRITES',
+        label: 'Show Link and Marin',
+        defaultValue: true
+      },
+      {
         type: 'submit',
         defaultValue: 'Save'
       }

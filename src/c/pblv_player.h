@@ -70,7 +70,7 @@ bool pblv_player_apply_pending(PblvPlayer *player);
 //
 // Notes:
 // - Uses a 16x16 GBitmapFormat2BitPalette scratch bitmap and updates its palette per tile.
-void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds);
+void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool show_sprites);
 
 static inline uint32_t pblv_player_delta_frames_to_ms(uint16_t delta_frames) {
   const uint32_t ms = (uint32_t)delta_frames * 1000u / 60u;

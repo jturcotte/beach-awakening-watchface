@@ -369,7 +369,7 @@ static void prv_copy_tile_flipped(uint8_t dst[PBLV_TILE_BYTES], const uint8_t sr
   }
 }
 
-void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds) {
+void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool show_sprites) {
   if(!player || !ctx || !player->scratch_tile) {
     return;
   }
@@ -453,73 +453,75 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds) {
   }
 
   // Sprites (OBJ)
-  graphics_context_set_compositing_mode(ctx, GCompOpSet);
+  if (show_sprites) {
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
 
-  uint8_t last_obj_pal = 0xFF;
-  for(uint16_t i = 0; i < 40; i++) {
-    const uint8_t oy = player->oam[i][0];
-    const uint8_t ox = player->oam[i][1];
-    const uint8_t tile_id = player->oam[i][2];
-    const uint8_t attr = player->oam[i][3];
+    uint8_t last_obj_pal = 0xFF;
+    for(uint16_t i = 0; i < 40; i++) {
+      const uint8_t oy = player->oam[i][0];
+      const uint8_t ox = player->oam[i][1];
+      const uint8_t tile_id = player->oam[i][2];
+      const uint8_t attr = player->oam[i][3];
 
-    if(ox == 0 || oy == 0) {
-      continue;
-    }
-
-    const uint8_t pal = (uint8_t)(attr & 0x07);
-    const uint8_t bank = (uint8_t)((attr >> 3) & 0x01);
-    const bool xflip = (attr & 0x20) != 0;
-    const bool yflip = (attr & 0x40) != 0;
-
-    if(pal != last_obj_pal) {
-      const uint8_t *pal_bytes = &player->obj_palette_bytes[pal * 4];
-      palette[0].argb = (uint8_t)(pal_bytes[0] & 0x3F); // transparent color 0
-      palette[1].argb = pal_bytes[1];
-      palette[2].argb = pal_bytes[2];
-      palette[3].argb = pal_bytes[3];
-      const bool free_on_destroy = false;
-      gbitmap_set_palette(player->scratch_tile, palette, free_on_destroy);
-      last_obj_pal = pal;
-    }
-
-    const bool tall = (player->lcdc & 0x04) != 0; // OBJ size: 8x16
-    const uint16_t base_tile = tall ? (uint16_t)(tile_id & 0xFE) : tile_id;
-
-    const int16_t x = (int16_t)(bounds.origin.x + offset_x + ((int16_t)ox - 8) * 2);
-    const int16_t y = (int16_t)(bounds.origin.y + offset_y + ((int16_t)oy - 16) * 2);
-
-    const uint16_t tile0_index = base_tile;
-    const uint16_t tile1_index = (uint16_t)(base_tile + 1);
-
-    const uint8_t *tile0 = (bank < 2 && tile0_index < 384) ? player->tiles[bank][tile0_index] : player->tiles[0][0];
-    const uint8_t *tile1 = (bank < 2 && tile1_index < 384) ? player->tiles[bank][tile1_index] : player->tiles[0][0];
-
-    if(tall && yflip) {
-      const uint8_t *tmp = tile0;
-      tile0 = tile1;
-      tile1 = tmp;
-    }
-
-    if(xflip || yflip) {
-      prv_copy_tile_flipped(player->scratch_pixels, tile0, xflip, yflip);
-      gbitmap_set_data(player->scratch_tile, player->scratch_pixels, GBitmapFormat2BitPalette, 4, false);
-    } else {
-      gbitmap_set_data(player->scratch_tile, (uint8_t *)tile0, GBitmapFormat2BitPalette, 4, false);
-    }
-
-    graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
-
-    if(tall) {
-      const int16_t y2 = (int16_t)(y + (int16_t)PBLV_TILE_PX);
-
-      if(xflip || yflip) {
-        prv_copy_tile_flipped(player->scratch_pixels, tile1, xflip, yflip);
-        gbitmap_set_data(player->scratch_tile, player->scratch_pixels, GBitmapFormat2BitPalette, 4, false);
-      } else {
-        gbitmap_set_data(player->scratch_tile, (uint8_t *)tile1, GBitmapFormat2BitPalette, 4, false);
+      if(ox == 0 || oy == 0) {
+        continue;
       }
 
-      graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y2, PBLV_TILE_PX, PBLV_TILE_PX));
+      const uint8_t pal = (uint8_t)(attr & 0x07);
+      const uint8_t bank = (uint8_t)((attr >> 3) & 0x01);
+      const bool xflip = (attr & 0x20) != 0;
+      const bool yflip = (attr & 0x40) != 0;
+
+      if(pal != last_obj_pal) {
+        const uint8_t *pal_bytes = &player->obj_palette_bytes[pal * 4];
+        palette[0].argb = (uint8_t)(pal_bytes[0] & 0x3F); // transparent color 0
+        palette[1].argb = pal_bytes[1];
+        palette[2].argb = pal_bytes[2];
+        palette[3].argb = pal_bytes[3];
+        const bool free_on_destroy = false;
+        gbitmap_set_palette(player->scratch_tile, palette, free_on_destroy);
+        last_obj_pal = pal;
+      }
+
+      const bool tall = (player->lcdc & 0x04) != 0; // OBJ size: 8x16
+      const uint16_t base_tile = tall ? (uint16_t)(tile_id & 0xFE) : tile_id;
+
+      const int16_t x = (int16_t)(bounds.origin.x + offset_x + ((int16_t)ox - 8) * 2);
+      const int16_t y = (int16_t)(bounds.origin.y + offset_y + ((int16_t)oy - 16) * 2);
+
+      const uint16_t tile0_index = base_tile;
+      const uint16_t tile1_index = (uint16_t)(base_tile + 1);
+
+      const uint8_t *tile0 = (bank < 2 && tile0_index < 384) ? player->tiles[bank][tile0_index] : player->tiles[0][0];
+      const uint8_t *tile1 = (bank < 2 && tile1_index < 384) ? player->tiles[bank][tile1_index] : player->tiles[0][0];
+
+      if(tall && yflip) {
+        const uint8_t *tmp = tile0;
+        tile0 = tile1;
+        tile1 = tmp;
+      }
+
+      if(xflip || yflip) {
+        prv_copy_tile_flipped(player->scratch_pixels, tile0, xflip, yflip);
+        gbitmap_set_data(player->scratch_tile, player->scratch_pixels, GBitmapFormat2BitPalette, 4, false);
+      } else {
+        gbitmap_set_data(player->scratch_tile, (uint8_t *)tile0, GBitmapFormat2BitPalette, 4, false);
+      }
+
+      graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y, PBLV_TILE_PX, PBLV_TILE_PX));
+
+      if(tall) {
+        const int16_t y2 = (int16_t)(y + (int16_t)PBLV_TILE_PX);
+
+        if(xflip || yflip) {
+          prv_copy_tile_flipped(player->scratch_pixels, tile1, xflip, yflip);
+          gbitmap_set_data(player->scratch_tile, player->scratch_pixels, GBitmapFormat2BitPalette, 4, false);
+        } else {
+          gbitmap_set_data(player->scratch_tile, (uint8_t *)tile1, GBitmapFormat2BitPalette, 4, false);
+        }
+
+        graphics_draw_bitmap_in_rect(ctx, player->scratch_tile, GRect(x, y2, PBLV_TILE_PX, PBLV_TILE_PX));
+      }
     }
   }
 }

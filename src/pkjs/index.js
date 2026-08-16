@@ -18,6 +18,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
 
 	settings[messageKeys.ANIMATION_LOOP_DELAY] = isNaN(delay) ? 5000 : delay;
 	settings[messageKeys.SHOW_DATE] = settings[messageKeys.SHOW_DATE] ? 1 : 0;
+	settings[messageKeys.SHOW_SPRITES] = settings[messageKeys.SHOW_SPRITES] ? 1 : 0;
 
 	Pebble.sendAppMessage(settings, function() {
 		console.log('Sent config data to Pebble');
