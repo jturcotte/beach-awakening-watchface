@@ -44,6 +44,7 @@
 #define LOOP_PAUSE_FRAME_INDEX 3
 #define LOOP_PAUSE_DURATION_DEFAULT 5000
 #define LOOP_PAUSE_DURATION_TICK_TRIGGER 60000
+#define LOOP_PAUSE_DURATION_DISABLED -1
 
 static Window *s_window;
 static Layer *s_root_layer;
@@ -51,7 +52,7 @@ static AppTimer *s_timer;
 
 static PblvPlayer s_player;
 static bool s_player_ready;
-static uint32_t s_loop_pause_duration = LOOP_PAUSE_DURATION_DEFAULT;
+static int32_t s_loop_pause_duration = LOOP_PAUSE_DURATION_DEFAULT;
 static bool s_waiting_for_tick_loop;
 static uint32_t s_waiting_for_tick_delay_ms;
 static bool s_show_date = true;
@@ -228,8 +229,9 @@ static void prv_draw_date_text(GContext *ctx, int16_t time_right, int16_t time_y
   }
 }
 
-static uint32_t prv_loop_pause_duration_from_int(int32_t candidate) {
+static int32_t prv_loop_pause_duration_from_int(int32_t candidate) {
   switch(candidate) {
+    case -1:
     case 0:
     case 2000:
     case 5000:
@@ -237,21 +239,27 @@ static uint32_t prv_loop_pause_duration_from_int(int32_t candidate) {
     case 15000:
     case 30000:
     case 60000:
-      return (uint32_t)candidate;
+      return candidate;
     default:
       return LOOP_PAUSE_DURATION_DEFAULT;
   }
 }
 
-static void prv_set_loop_pause_duration(uint32_t duration_ms) {
+static void prv_schedule_next_frame(void);
+static void prv_timer_cb(void *context);
+
+static void prv_set_loop_pause_duration(int32_t duration_ms) {
   s_loop_pause_duration = duration_ms;
-  persist_write_int(MESSAGE_KEY_ANIMATION_LOOP_DELAY, (int32_t)duration_ms);
+  persist_write_int(MESSAGE_KEY_ANIMATION_LOOP_DELAY, duration_ms);
+
+  // Restart the animation if the previous config was waiting for a tick loop to continue or if it was disabled.
+  prv_schedule_next_frame();
 }
 
 static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
   Tuple *loop_pause = dict_find(iter, MESSAGE_KEY_ANIMATION_LOOP_DELAY);
   if(loop_pause) {
-    uint32_t duration_ms = LOOP_PAUSE_DURATION_DEFAULT;
+    int32_t duration_ms = LOOP_PAUSE_DURATION_DEFAULT;
     switch(loop_pause->type) {
       case TUPLE_INT:
         duration_ms = prv_loop_pause_duration_from_int(loop_pause->value->int32);
@@ -286,11 +294,9 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
   }
 }
 
-static void prv_schedule_next_frame(void);
-static void prv_timer_cb(void *context);
-
 static void prv_schedule_frame_after_delay(uint32_t ms) {
-  s_timer = app_timer_register(ms, prv_timer_cb, NULL);
+  if (!app_timer_reschedule(s_timer, ms))
+    s_timer = app_timer_register(ms, prv_timer_cb, NULL);
 }
 
 static void update_face(void) {
@@ -456,7 +462,11 @@ static void prv_schedule_next_frame(void) {
 
   const uint32_t frame_delay_ms = pblv_player_delta_frames_to_ms(s_player.pending_delta_frames);
 
-  if(s_loop_pause_duration == LOOP_PAUSE_DURATION_TICK_TRIGGER && s_player.pending_looped) {
+  if(s_loop_pause_duration == LOOP_PAUSE_DURATION_DISABLED && s_player.pending_frame_index == LOOP_PAUSE_FRAME_INDEX) {
+    // Just in case the setting was 60s and we were already waiting, don't trigger the animation on the next tick.
+    s_waiting_for_tick_loop = false;
+    return;
+  } else if(s_loop_pause_duration == LOOP_PAUSE_DURATION_TICK_TRIGGER && s_player.pending_frame_index == LOOP_PAUSE_FRAME_INDEX) {
     s_waiting_for_tick_loop = true;
     s_waiting_for_tick_delay_ms = frame_delay_ms;
     return;

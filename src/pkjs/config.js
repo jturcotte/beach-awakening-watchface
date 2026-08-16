@@ -36,6 +36,10 @@ module.exports = [
           {
             label: '60s',
             value: '60000'
+          },
+          {
+            label: 'Disabled',
+            value: '-1'
           }
         ]
       },
