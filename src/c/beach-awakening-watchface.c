@@ -318,7 +318,7 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
 }
 
 static void prv_schedule_frame_after_delay(uint32_t ms) {
-  if (!app_timer_reschedule(s_timer, ms))
+  if (!s_timer || !app_timer_reschedule(s_timer, ms))
     s_timer = app_timer_register(ms, prv_timer_cb, NULL);
 }
 
