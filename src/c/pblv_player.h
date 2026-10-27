@@ -5,6 +5,10 @@
 // Minimal PBLV (v1) player for rendering 20x18 GB BG maps.
 // Designed to stream frame updates from a Pebble raw resource.
 
+#define PBLV_MAP_TILE_SIZE 16
+#define PBLV_MAP_WIDTH 20
+#define PBLV_MAP_HEIGHT 18
+
 typedef struct {
   uint16_t tile_key;
   uint8_t palette;
@@ -71,6 +75,15 @@ bool pblv_player_apply_pending(PblvPlayer *player);
 // Notes:
 // - Uses a 16x16 GBitmapFormat2BitPalette scratch bitmap and updates its palette per tile.
 void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool show_sprites);
+
+// Returns the map origin in display coordinates for the current target platform.
+GPoint pblv_player_map_origin(GRect display_bounds);
+
+// Renders map rows [first_row, end_row) at map_origin, clipped to clip_bounds.
+// Row indices are zero-based; sprite rendering is controlled independently.
+void pblv_player_render_region(PblvPlayer *player, GContext *ctx, GPoint map_origin,
+                               GRect clip_bounds, uint8_t first_row, uint8_t end_row,
+                               bool show_sprites);
 
 static inline uint32_t pblv_player_delta_frames_to_ms(uint16_t delta_frames) {
   const uint32_t ms = (uint32_t)delta_frames * 1000u / 60u;

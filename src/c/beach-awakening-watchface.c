@@ -45,9 +45,33 @@
 #define LOOP_PAUSE_DURATION_DEFAULT 5000
 #define LOOP_PAUSE_DURATION_TICK_TRIGGER 60000
 #define LOOP_PAUSE_DURATION_DISABLED -1
+#define BACKGROUND_REGION_COUNT 3
+
+#ifndef PBLV_DEBUG_LAYER_BOUNDS
+#define PBLV_DEBUG_LAYER_BOUNDS 0
+#endif
+
+typedef struct {
+  uint8_t first_row;
+  uint8_t last_row;
+  bool is_static;
+  Layer *layer;
+  GBitmap *cache;
+  bool cache_valid;
+} BackgroundRegion;
+
+static BackgroundRegion s_background_regions[BACKGROUND_REGION_COUNT] = {
+  { .first_row = 1, .last_row = 9, .is_static = true },
+  { .first_row = 10, .last_row = 13, .is_static = false },
+  { .first_row = 14, .last_row = 18, .is_static = true },
+};
 
 static Window *s_window;
 static Layer *s_root_layer;
+static Layer *s_time_layer;
+#if PBLV_DEBUG_LAYER_BOUNDS
+static Layer *s_debug_layer;
+#endif
 static AppTimer *s_timer;
 
 static PblvPlayer s_player;
@@ -92,6 +116,25 @@ static const uint8_t s_letter_lower_w[DATE_ATLAS_ALPHA_COUNT] = {
   14, 10, 16, 16, 14, 12, 16, 12, 12, 12, 10, 10, 16,
   14, 14, 10, 10, 12, 10, 14, 14, 10, 12, 10, 12, 10
 };
+
+static void prv_invalidate_static_regions(void) {
+  for(uint8_t index = 0; index < BACKGROUND_REGION_COUNT; index++) {
+    BackgroundRegion *region = &s_background_regions[index];
+    if(!region->is_static || !region->layer) {
+      continue;
+    }
+    region->cache_valid = false;
+    layer_mark_dirty(region->layer);
+  }
+}
+
+static void prv_invalidate_sand_region(void) {
+  BackgroundRegion *sand = &s_background_regions[2];
+  sand->cache_valid = false;
+  if(sand->layer) {
+    layer_mark_dirty(sand->layer);
+  }
+}
 
 static void prv_format_date_text(const struct tm *time_info, char *buffer, size_t buffer_size) {
   static const char *const s_weekdays[] = {
@@ -197,7 +240,8 @@ static int16_t prv_measure_date_text(const char *text) {
   return width;
 }
 
-static void prv_draw_date_text(GContext *ctx, int16_t time_right, int16_t time_y, const char *text) {
+static void prv_draw_date_text(GContext *ctx, int16_t time_right, int16_t time_y,
+                               const char *text, GPoint layer_origin) {
   if(!ctx || !text || !s_letters) {
     return;
   }
@@ -225,7 +269,9 @@ static void prv_draw_date_text(GContext *ctx, int16_t time_right, int16_t time_y
     }
 
     graphics_draw_bitmap_in_rect(ctx, glyph,
-                                 GRect(x, y + glyph_y_offset, glyph_width, glyph_height));
+                                 GRect(x - layer_origin.x,
+                                       y + glyph_y_offset - layer_origin.y,
+                                       glyph_width, glyph_height));
     x = (int16_t)(x + glyph_width);
   }
 }
@@ -258,8 +304,12 @@ static void prv_set_loop_pause_duration(int32_t duration_ms) {
 }
 
 static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) {
+  bool configuration_changed = false;
+  bool date_visibility_changed = false;
+
   Tuple *loop_pause = dict_find(iter, MESSAGE_KEY_ANIMATION_LOOP_DELAY);
   if(loop_pause) {
+    configuration_changed = true;
     int32_t duration_ms = LOOP_PAUSE_DURATION_DEFAULT;
     switch(loop_pause->type) {
       case TUPLE_INT:
@@ -289,10 +339,8 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     }
     s_show_date = enabled;
     persist_write_bool(MESSAGE_KEY_SHOW_DATE, enabled);
-
-    if(s_root_layer) {
-      layer_mark_dirty(s_root_layer);
-    }
+    configuration_changed = true;
+    date_visibility_changed = true;
   }
 
   Tuple *show_sprites = dict_find(iter, MESSAGE_KEY_SHOW_SPRITES);
@@ -310,10 +358,14 @@ static void prv_inbox_received_handler(DictionaryIterator *iter, void *context) 
     }
     s_show_sprites = enabled;
     persist_write_bool(MESSAGE_KEY_SHOW_SPRITES, enabled);
+    configuration_changed = true;
+  }
 
-    if(s_root_layer) {
-      layer_mark_dirty(s_root_layer);
-    }
+  if(configuration_changed) {
+    prv_invalidate_static_regions();
+  }
+  if(date_visibility_changed && s_time_layer) {
+    layer_mark_dirty(s_time_layer);
   }
 }
 
@@ -322,47 +374,55 @@ static void prv_schedule_frame_after_delay(uint32_t ms) {
     s_timer = app_timer_register(ms, prv_timer_cb, NULL);
 }
 
-static void update_face(void) {
+static bool update_face(void) {
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
-  if (t) {
-    const bool is_24h = clock_is_24h_style();
-    int hour = t->tm_hour;
-    const int minute = t->tm_min;
+  if(!s_player_ready || !t) {
+    return false;
+  }
 
-    if(!is_24h) {
-      hour %= 12;
-      if(hour == 0) {
-        hour = 12;
-      }
+  const bool is_24h = clock_is_24h_style();
+  int hour = t->tm_hour;
+  const int minute = t->tm_min;
+
+  if(!is_24h) {
+    hour %= 12;
+    if(hour == 0) {
+      hour = 12;
     }
-    // Update the sprites tile_id and h_flip flag to show Marin looking left
-    if ((minute == 00 && hour == 0)
-        || (minute == 11 && hour == 11)
-        || (minute == 22 && hour == 22)
-        || (!is_24h &&
+  }
+
+  // Update the sprite tile IDs and flip flag to show Marin looking left.
+  const bool looking_left = (minute == 00 && hour == 0)
+      || (minute == 11 && hour == 11)
+      || (minute == 22 && hour == 22)
+      || (!is_24h &&
           ((minute == 11 && hour == 1)
           || (minute == 22 && hour == 2)
           || (minute == 33 && hour == 3)
           || (minute == 44 && hour == 4)
-          || (minute == 55 && hour == 5)))) {
-      s_player.oam[12][2] = 70;
-      s_player.oam[13][2] = 72;
-      s_player.oam[13][3] = 0x01;
-    } else {
-      s_player.oam[12][2] = 64;
-      s_player.oam[13][2] = 64;
-      s_player.oam[13][3] = 0x21;
-    }
-  }
+          || (minute == 55 && hour == 5)));
+  const uint8_t top_tile = looking_left ? 70 : 64;
+  const uint8_t bottom_tile = looking_left ? 72 : 64;
+  const uint8_t bottom_attributes = looking_left ? 0x01 : 0x21;
+  const bool changed = s_player.oam[12][2] != top_tile
+      || s_player.oam[13][2] != bottom_tile
+      || s_player.oam[13][3] != bottom_attributes;
+
+  s_player.oam[12][2] = top_tile;
+  s_player.oam[13][2] = bottom_tile;
+  s_player.oam[13][3] = bottom_attributes;
+  return changed;
 }
 
 static void prv_tick_handler(struct tm *tick_time, TimeUnits units_changed) {
-  if(s_root_layer) {
-    layer_mark_dirty(s_root_layer);
+  if(s_time_layer) {
+    layer_mark_dirty(s_time_layer);
   }
 
-  update_face();
+  if(update_face()) {
+    prv_invalidate_sand_region();
+  }
 
   if(!s_waiting_for_tick_loop) {
     return;
@@ -372,7 +432,7 @@ static void prv_tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   prv_schedule_frame_after_delay(s_waiting_for_tick_delay_ms);
 }
 
-static void prv_draw_time(GContext *ctx, GRect bounds) {
+static void prv_draw_time(GContext *ctx, GRect bounds, GPoint layer_origin) {
   if(!s_digits || !s_digit_sub[DIGIT_COLON_INDEX]) {
     return;
   }
@@ -421,39 +481,232 @@ static void prv_draw_time(GContext *ctx, GRect bounds) {
   if(s_show_date) {
     char date_text[16];
     prv_format_date_text(t, date_text, sizeof(date_text));
-    prv_draw_date_text(ctx, time_right, y, date_text);
+    prv_draw_date_text(ctx, time_right, y, date_text, layer_origin);
   }
 
   if(has_h_tens) {
     graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_tens],
-                                 GRect(x, y, s_digit_w[h_tens], digit_h));
+                                 GRect(x - layer_origin.x, y - layer_origin.y,
+                                       s_digit_w[h_tens], digit_h));
     x = (int16_t)(x + s_digit_w[h_tens] + spacing);
   }
 
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[h_ones],
-                               GRect(x, y, s_digit_w[h_ones], digit_h));
+                               GRect(x - layer_origin.x, y - layer_origin.y,
+                                     s_digit_w[h_ones], digit_h));
   x = (int16_t)(x + s_digit_w[h_ones] + spacing);
 
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[DIGIT_COLON_INDEX],
-                               GRect(x, y, colon_w, digit_h));
+                               GRect(x - layer_origin.x, y - layer_origin.y,
+                                     colon_w, digit_h));
   x = (int16_t)(x + colon_w + spacing);
 
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_tens],
-                               GRect(x, y, s_digit_w[m_tens], digit_h));
+                               GRect(x - layer_origin.x, y - layer_origin.y,
+                                     s_digit_w[m_tens], digit_h));
   x = (int16_t)(x + s_digit_w[m_tens] + spacing);
 
   graphics_draw_bitmap_in_rect(ctx, s_digit_sub[m_ones],
-                               GRect(x, y, s_digit_w[m_ones], digit_h));
+                               GRect(x - layer_origin.x, y - layer_origin.y,
+                                     s_digit_w[m_ones], digit_h));
 }
 
-static void prv_canvas_update_proc(Layer *layer, GContext *ctx) {
+static GRect prv_background_frame(const BackgroundRegion *region) {
+  const GRect display_bounds = layer_get_bounds(s_root_layer);
+  const GPoint map_origin = pblv_player_map_origin(display_bounds);
+  const int16_t region_top = (int16_t)(map_origin.y
+      + (region->first_row - 1) * PBLV_MAP_TILE_SIZE);
+  GRect frame = GRect(display_bounds.origin.x, region_top, display_bounds.size.w,
+                      (region->last_row - region->first_row + 1) * PBLV_MAP_TILE_SIZE);
+  grect_clip(&frame, &display_bounds);
+  return frame;
+}
+
+static GRect prv_time_layer_frame(void) {
+  const GRect display_bounds = layer_get_bounds(s_root_layer);
+  const int16_t digit_height = s_digits ? gbitmap_get_bounds(s_digits).size.h : 1;
+  const int16_t time_y = (int16_t)(display_bounds.origin.y
+      + (display_bounds.size.h - digit_height) / 2 + TIME_OFFSET_Y);
+  const int16_t top = (int16_t)(time_y - DATE_LINE_HEIGHT - DATE_GAP_ABOVE_TIME);
+  GRect frame = GRect(display_bounds.origin.x, top, display_bounds.size.w,
+                      DATE_LINE_HEIGHT + DATE_GAP_ABOVE_TIME + digit_height);
+  grect_clip(&frame, &display_bounds);
+  return frame;
+}
+
+static void prv_render_background_region(BackgroundRegion *region, GContext *ctx) {
+  const GRect frame = layer_get_frame(region->layer);
+  const GPoint display_map_origin = pblv_player_map_origin(layer_get_bounds(s_root_layer));
+  const GPoint local_map_origin = GPoint(display_map_origin.x - frame.origin.x,
+                                        display_map_origin.y - frame.origin.y);
+  const bool draw_sprites = region == &s_background_regions[2] && s_show_sprites;
+
+  pblv_player_render_region(&s_player, ctx, local_map_origin,
+                            layer_get_bounds(region->layer),
+                            region->first_row - 1, region->last_row,
+                            draw_sprites);
+}
+
+static bool prv_copy_framebuffer_to_cache(BackgroundRegion *region, GContext *ctx) {
+  if(!region->cache) {
+    return false;
+  }
+
+  GBitmap *framebuffer = graphics_capture_frame_buffer_format(ctx, GBitmapFormat8Bit);
+  if(!framebuffer) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Unable to capture static region framebuffer");
+    return false;
+  }
+
+  const GRect cache_bounds = layer_get_bounds(region->layer);
+  const GRect screen_bounds = layer_convert_rect_to_screen(region->layer, cache_bounds);
+  const GRect framebuffer_bounds = gbitmap_get_bounds(framebuffer);
+  const int16_t screen_right = screen_bounds.origin.x + screen_bounds.size.w;
+  const int16_t screen_bottom = screen_bounds.origin.y + screen_bounds.size.h;
+  const int16_t framebuffer_right = framebuffer_bounds.origin.x + framebuffer_bounds.size.w;
+  const int16_t framebuffer_bottom = framebuffer_bounds.origin.y + framebuffer_bounds.size.h;
+  const bool fully_visible = screen_bounds.origin.x >= framebuffer_bounds.origin.x
+      && screen_bounds.origin.y >= framebuffer_bounds.origin.y
+      && screen_right <= framebuffer_right
+      && screen_bottom <= framebuffer_bottom;
+
+  if(fully_visible) {
+    uint8_t *destination = gbitmap_get_data(region->cache);
+    const uint16_t destination_stride = gbitmap_get_bytes_per_row(region->cache);
+    const uint16_t framebuffer_width = framebuffer_bounds.size.w;
+
+    for(int16_t row = 0; row < cache_bounds.size.h; row++) {
+      const int16_t source_y = screen_bounds.origin.y + row - framebuffer_bounds.origin.y;
+      GBitmapDataRowInfo source_row = gbitmap_get_data_row_info(framebuffer, source_y);
+      uint8_t *destination_row = destination + row * destination_stride;
+
+      for(int16_t column = 0; column < cache_bounds.size.w; column++) {
+        const int16_t source_x = screen_bounds.origin.x + column - framebuffer_bounds.origin.x;
+        if(source_x >= 0 && source_x < framebuffer_width
+            && source_x >= source_row.min_x && source_x <= source_row.max_x) {
+          destination_row[column] = source_row.data[source_x];
+        }
+      }
+    }
+  }
+
+  graphics_release_frame_buffer(ctx, framebuffer);
+  return fully_visible;
+}
+
+static void prv_background_update_proc(Layer *layer, GContext *ctx) {
   if(!s_player_ready) {
     return;
   }
 
-  const GRect bounds = layer_get_bounds(layer);
-  pblv_player_render(&s_player, ctx, bounds, s_show_sprites);
-  prv_draw_time(ctx, bounds);
+  BackgroundRegion *region = NULL;
+  for(uint8_t index = 0; index < BACKGROUND_REGION_COUNT; index++) {
+    if(s_background_regions[index].layer == layer) {
+      region = &s_background_regions[index];
+      break;
+    }
+  }
+  if(!region) {
+    return;
+  }
+
+  if(region->is_static && region->cache && region->cache_valid) {
+    graphics_context_set_compositing_mode(ctx, GCompOpAssign);
+    graphics_draw_bitmap_in_rect(ctx, region->cache, layer_get_bounds(layer));
+    return;
+  }
+
+  prv_render_background_region(region, ctx);
+  if(region->is_static && region->cache) {
+    region->cache_valid = prv_copy_framebuffer_to_cache(region, ctx);
+  }
+}
+
+static void prv_time_update_proc(Layer *layer, GContext *ctx) {
+  const GRect display_bounds = layer_get_bounds(s_root_layer);
+  const GRect frame = layer_get_frame(layer);
+  const GPoint layer_origin = GPoint(frame.origin.x - display_bounds.origin.x,
+                                     frame.origin.y - display_bounds.origin.y);
+  prv_draw_time(ctx, display_bounds, layer_origin);
+}
+
+static void prv_root_update_proc(Layer *layer, GContext *ctx) {
+  // Child layers paint the face; avoid a redundant full-window fill here.
+  (void)layer;
+  (void)ctx;
+}
+
+#if PBLV_DEBUG_LAYER_BOUNDS
+static void prv_debug_update_proc(Layer *layer, GContext *ctx) {
+  (void)layer;
+  const GColor colors[BACKGROUND_REGION_COUNT] = { GColorRed, GColorGreen, GColorYellow };
+  graphics_context_set_stroke_width(ctx, 1);
+  for(uint8_t index = 0; index < BACKGROUND_REGION_COUNT; index++) {
+    if(s_background_regions[index].layer) {
+      graphics_context_set_stroke_color(ctx, colors[index]);
+      graphics_draw_rect(ctx, layer_get_frame(s_background_regions[index].layer));
+    }
+  }
+  if(s_time_layer) {
+    graphics_context_set_stroke_color(ctx, GColorCyan);
+    graphics_draw_rect(ctx, layer_get_frame(s_time_layer));
+  }
+}
+#endif
+
+static void prv_create_content_layers(void) {
+  for(uint8_t index = 0; index < BACKGROUND_REGION_COUNT; index++) {
+    BackgroundRegion *region = &s_background_regions[index];
+    const GRect frame = prv_background_frame(region);
+    if(frame.size.w <= 0 || frame.size.h <= 0) {
+      continue;
+    }
+
+    region->layer = layer_create(frame);
+    if(!region->layer) {
+      APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to create PBLV region layer %u", (unsigned)index);
+      continue;
+    }
+
+    layer_set_update_proc(region->layer, prv_background_update_proc);
+    layer_set_clips(region->layer, true);
+    if(region->is_static) {
+      region->cache = gbitmap_create_blank(frame.size, GBitmapFormat8Bit);
+      if(!region->cache) {
+        APP_LOG(APP_LOG_LEVEL_WARNING, "Unable to allocate static PBLV cache %u", (unsigned)index);
+      }
+    }
+    layer_add_child(s_root_layer, region->layer);
+  }
+
+  const GRect time_frame = prv_time_layer_frame();
+  if(time_frame.size.w > 0 && time_frame.size.h > 0) {
+    s_time_layer = layer_create(time_frame);
+    if(s_time_layer) {
+      layer_set_update_proc(s_time_layer, prv_time_update_proc);
+      layer_set_clips(s_time_layer, true);
+      layer_add_child(s_root_layer, s_time_layer);
+    } else {
+      APP_LOG(APP_LOG_LEVEL_ERROR, "Unable to create date/time layer");
+    }
+  }
+
+#if PBLV_DEBUG_LAYER_BOUNDS
+  s_debug_layer = layer_create(layer_get_bounds(s_root_layer));
+  if(s_debug_layer) {
+    layer_set_update_proc(s_debug_layer, prv_debug_update_proc);
+    layer_add_child(s_root_layer, s_debug_layer);
+  }
+#endif
+
+  for(uint8_t index = 0; index < BACKGROUND_REGION_COUNT; index++) {
+    if(s_background_regions[index].layer) {
+      layer_mark_dirty(s_background_regions[index].layer);
+    }
+  }
+  if(s_time_layer) {
+    layer_mark_dirty(s_time_layer);
+  }
 }
 
 static void prv_timer_cb(void *context) {
@@ -468,10 +721,11 @@ static void prv_timer_cb(void *context) {
     return;
   }
 
-  // Request a redraw; we render into the system framebuffer in update_proc.
-  layer_mark_dirty(s_root_layer);
-
-  // Queue next frame.
+  // Animation frames only change the water region (rows 10-13).
+  if(s_background_regions[1].layer) {
+    layer_mark_dirty(s_background_regions[1].layer);
+  }
+  // Queue the next frame.
   prv_schedule_next_frame();
 }
 
@@ -506,7 +760,7 @@ static void prv_schedule_next_frame(void) {
 
 static void prv_window_load(Window *window) {
   s_root_layer = window_get_root_layer(window);
-  layer_set_update_proc(s_root_layer, prv_canvas_update_proc);
+  layer_set_update_proc(s_root_layer, prv_root_update_proc);
 
   const ResHandle res = resource_get_handle(RESOURCE_ID_BEACH_PBLV);
   s_player_ready = pblv_player_init(&s_player, res);
@@ -553,8 +807,9 @@ static void prv_window_load(Window *window) {
   }
 
   if(s_player_ready) {
-    // Render keyframe immediately.
-    layer_mark_dirty(s_root_layer);
+    // Render the loaded keyframe through the child layers.
+    update_face();
+    prv_create_content_layers();
 
     // Schedule the first frame.
     prv_schedule_next_frame();
@@ -567,6 +822,30 @@ static void prv_window_unload(Window *window) {
   if(s_timer) {
     app_timer_cancel(s_timer);
     s_timer = NULL;
+  }
+
+#if PBLV_DEBUG_LAYER_BOUNDS
+  if(s_debug_layer) {
+    layer_destroy(s_debug_layer);
+    s_debug_layer = NULL;
+  }
+#endif
+
+  if(s_time_layer) {
+    layer_destroy(s_time_layer);
+    s_time_layer = NULL;
+  }
+  for(uint8_t index = 0; index < BACKGROUND_REGION_COUNT; index++) {
+    BackgroundRegion *region = &s_background_regions[index];
+    if(region->cache) {
+      gbitmap_destroy(region->cache);
+      region->cache = NULL;
+    }
+    if(region->layer) {
+      layer_destroy(region->layer);
+      region->layer = NULL;
+    }
+    region->cache_valid = false;
   }
 
   if(s_player_ready) {

@@ -3,7 +3,7 @@
 #define PBLV_MAGIC 0x564c4250u // 'PBLV' little-endian
 #define PBLV_KEYF  0x4659454bu // 'KEYF' little-endian
 
-#define PBLV_TILE_PX 16u
+#define PBLV_TILE_PX PBLV_MAP_TILE_SIZE
 #define PBLV_TILE_BYTES 64u
 
 static bool prv_res_read(ResHandle res, uint32_t offset, void *out, size_t len) {
@@ -370,11 +370,32 @@ static void prv_copy_tile_flipped(uint8_t dst[PBLV_TILE_BYTES], const uint8_t sr
 }
 
 void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool show_sprites) {
+  pblv_player_render_region(player, ctx, pblv_player_map_origin(bounds), bounds,
+                            0, PBLV_MAP_HEIGHT, show_sprites);
+}
+
+GPoint pblv_player_map_origin(GRect display_bounds) {
+#ifdef PBL_PLATFORM_EMERY
+  const int16_t offset_x = -60;
+  const int16_t offset_y = -48;
+#elif PBL_PLATFORM_GABBRO
+  const int16_t offset_x = -30;
+  const int16_t offset_y = -16;
+#else
+  const int16_t offset_x = 0;
+  const int16_t offset_y = 0;
+#endif
+  return GPoint(display_bounds.origin.x + offset_x, display_bounds.origin.y + offset_y);
+}
+
+void pblv_player_render_region(PblvPlayer *player, GContext *ctx, GPoint map_origin,
+                              GRect clip_bounds, uint8_t first_row, uint8_t end_row,
+                              bool show_sprites) {
   if(!player || !ctx || !player->scratch_tile) {
     return;
   }
 
-  const GSize size = bounds.size;
+  const GSize size = clip_bounds.size;
   if(size.w <= 0 || size.h <= 0) {
     return;
   }
@@ -384,27 +405,28 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool sh
 
   const uint16_t draw_tiles_w = map_w;
   const uint16_t draw_tiles_h = map_h;
+  if(first_row > draw_tiles_h) {
+    first_row = (uint8_t)draw_tiles_h;
+  }
+  if(end_row > draw_tiles_h) {
+    end_row = (uint8_t)draw_tiles_h;
+  }
+  if(end_row < first_row) {
+    end_row = first_row;
+  }
 
   graphics_context_set_compositing_mode(ctx, GCompOpAssign);
-
-#ifdef PBL_PLATFORM_EMERY
-  const int16_t offset_x = -60;
-  const int16_t offset_y = -48;
-#elif PBL_PLATFORM_GABBRO
-  const int16_t offset_x = -30;
-  const int16_t offset_y = -16;
-#endif
 
   uint8_t last_pal = 0xFF;
   GColor palette[4];
 
-  const int16_t clip_left   = bounds.origin.x;
-  const int16_t clip_top    = bounds.origin.y;
-  const int16_t clip_right  = (int16_t)(bounds.origin.x + bounds.size.w);
-  const int16_t clip_bottom = (int16_t)(bounds.origin.y + bounds.size.h);
+  const int16_t clip_left   = clip_bounds.origin.x;
+  const int16_t clip_top    = clip_bounds.origin.y;
+  const int16_t clip_right  = (int16_t)(clip_bounds.origin.x + clip_bounds.size.w);
+  const int16_t clip_bottom = (int16_t)(clip_bounds.origin.y + clip_bounds.size.h);
 
-  for(uint16_t ty = 0; ty < draw_tiles_h; ty++) {
-    const int16_t y = (int16_t)(bounds.origin.y + offset_y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
+  for(uint16_t ty = first_row; ty < end_row; ty++) {
+    const int16_t y = (int16_t)(map_origin.y + (int16_t)ty * (int16_t)PBLV_TILE_PX);
 
     // Row is below the visible area: every later row is further down too, stop entirely.
     if(y >= clip_bottom) {
@@ -416,7 +438,7 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool sh
     }
 
     for(uint16_t tx = 0; tx < draw_tiles_w; tx++) {
-      const int16_t x = (int16_t)(bounds.origin.x + offset_x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
+      const int16_t x = (int16_t)(map_origin.x + (int16_t)tx * (int16_t)PBLV_TILE_PX);
 
       // Column is past the right edge: every later column is further right too, stop this row.
       if(x >= clip_right) {
@@ -486,8 +508,8 @@ void pblv_player_render(PblvPlayer *player, GContext *ctx, GRect bounds, bool sh
       const bool tall = (player->lcdc & 0x04) != 0; // OBJ size: 8x16
       const uint16_t base_tile = tall ? (uint16_t)(tile_id & 0xFE) : tile_id;
 
-      const int16_t x = (int16_t)(bounds.origin.x + offset_x + ((int16_t)ox - 8) * 2);
-      const int16_t y = (int16_t)(bounds.origin.y + offset_y + ((int16_t)oy - 16) * 2);
+      const int16_t x = (int16_t)(map_origin.x + ((int16_t)ox - 8) * 2);
+      const int16_t y = (int16_t)(map_origin.y + ((int16_t)oy - 16) * 2);
 
       const uint16_t tile0_index = base_tile;
       const uint16_t tile1_index = (uint16_t)(base_tile + 1);
